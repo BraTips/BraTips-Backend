@@ -1,0 +1,14 @@
+import { Router } from 'express';
+import { requireAuth, requireRole } from '../middleware/auth';
+import { fetchLiveFootball, fetchFixtures, fetchFixture, fetchOdds, fetchFixtureOdds, fetchXGoals, syncFixtures } from '../services/providerService';
+import { Prediction } from '../models/Prediction';
+export const providersRouter=Router(); providersRouter.use(requireAuth,requireRole('admin'));
+providersRouter.get('/live-football',async(_req,res,next)=>{try{res.json({data:await fetchLiveFootball()})}catch(e){next(e)}});
+providersRouter.get('/fixtures',async(req,res,next)=>{try{const date=typeof req.query.date==='string'?req.query.date:new Date().toISOString().slice(0,10);res.json({data:await fetchFixtures(date)})}catch(e){next(e)}});
+providersRouter.get('/fixtures/:id',async(req,res,next)=>{try{res.json({data:await fetchFixture(req.params.id)})}catch(e){next(e)}});
+providersRouter.get('/odds',async(req,res,next)=>{try{const mode=req.query.mode==='inplay'?'inplay':'pre-match';res.json({data:await fetchOdds(mode)})}catch(e){next(e)}});
+providersRouter.get('/odds/:mode/:fixtureId',async(req,res,next)=>{try{const mode=req.params.mode==='inplay'?'inplay':'pre-match';res.json({data:await fetchFixtureOdds(req.params.fixtureId,mode)})}catch(e){next(e)}});
+providersRouter.get('/xgoals/:fixtureId',async(req,res,next)=>{try{res.json({data:await fetchXGoals(req.params.fixtureId)})}catch(e){next(e)}});
+providersRouter.post('/live-football/sync',async(_req,res,next)=>{try{const p:any=await fetchLiveFootball();const fixtures=Array.isArray(p?.data)?p.data:[];res.json({data:{fetched:fixtures.length,upserted:await syncFixtures(fixtures)}})}catch(e){next(e)}});
+providersRouter.post('/sync-date',async(req,res,next)=>{try{const date=typeof req.body?.date==='string'?req.body.date:new Date().toISOString().slice(0,10);const p:any=await fetchFixtures(date);const fixtures=Array.isArray(p?.data)?p.data:[];res.json({data:{date,fetched:fixtures.length,upserted:await syncFixtures(fixtures)}})}catch(e){next(e)}});
+providersRouter.get('/trends',async(_req,res,next)=>{try{const data=await Prediction.aggregate([{$match:{status:{$in:['won','lost']}}},{$group:{_id:'$prediction',tips:{$sum:1},wins:{$sum:{$cond:[{$eq:['$status','won']},1,0]}},profit:{$sum:{$ifNull:['$profit',0]}}}},{$addFields:{winRate:{$multiply:[{$divide:['$wins','$tips']},100]}}},{$sort:{tips:-1}},{$limit:25}]);res.json({data})}catch(e){next(e)}});
