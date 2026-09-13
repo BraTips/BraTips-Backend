@@ -6,7 +6,7 @@ import { Session } from "../models/Session";
 import { env } from "../config/env";
 import { hashToken, signAccessToken, signRefreshToken, verifyRefreshToken } from "../utils/tokens";
 import { requireAuth, type AuthRequest } from "../middleware/auth";
-import { TipsterApplication } from "../models/TipsterApplication";
+import { TipsterApplication } from "../models/TipsterApplication"; import { Notification } from '../models/Notification';
 
 export const authRouter = Router();
 const registerSchema = z.object({ name: z.string().min(2).max(100), email: z.string().email(), password: z.string().min(8).max(128) });
@@ -38,7 +38,7 @@ authRouter.post("/tipster-apply", async (req, res) => {
   if (await TipsterApplication.exists({ username: data.username })) return res.status(409).json({ message: "Tipster username already in use" });
   const user = await User.create({ name: data.name, email, passwordHash: await bcrypt.hash(data.password, 12), role: "user", status: "active" });
   const application = await TipsterApplication.create({ userId: user._id, username: data.username, country: data.country, bio: data.bio, experience: data.experience, expertise: data.expertise, profilePhoto: data.profilePhoto, socialLinks: data.socialLinks, samplePrediction: data.samplePrediction, status: "pending" });
-  res.status(201).json({ message: "Tipster application submitted for admin approval", applicationId: application.id, status: application.status });
+  const admins=await User.find({role:'admin',status:'active'}).select('_id'); await Notification.insertMany(admins.map(a=>({userId:a._id,type:'tipster',title:'New tipster application',message:`@${application.username} submitted a tipster application for review.`,link:'/tipsters/applications'}))); res.status(201).json({ message: "Tipster application submitted for admin approval", applicationId: application.id, status: application.status });
 });
 
 authRouter.post("/login", async (req, res) => {
