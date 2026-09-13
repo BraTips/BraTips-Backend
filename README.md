@@ -84,3 +84,21 @@ Optional AI configuration belongs only in the backend environment:
 - `DELETE /api/v1/me/picks/:id` (auth)
 - `GET /api/v1/me/tipster` (approved tipster auth)
 - `POST /api/v1/me/tipster/predictions` (approved tipster auth)
+
+## Stripe subscriptions
+
+BraTips uses Stripe Checkout subscriptions and Stripe Billing Portal. The backend does not store card details. Configure the Stripe secret, webhook signing secret, and the four Stripe Price IDs in `.env` (see `.env.example`).
+
+Webhook endpoint:
+
+`POST /api/v1/billing/webhook`
+
+Configure Stripe to send at least:
+- `checkout.session.completed`
+- `customer.subscription.created`
+- `customer.subscription.updated`
+- `customer.subscription.deleted`
+- `invoice.paid`
+- `invoice.payment_failed`
+
+The webhook is signature-verified and event IDs are stored for idempotent processing. Subscription access should be granted from confirmed webhook state rather than trusting the checkout success redirect.
