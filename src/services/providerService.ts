@@ -1,4 +1,5 @@
 import { providerConfig } from '../config/providers';
+import { OddsSnapshot } from '../models/OddsSnapshot';
 
 async function requestJson(url: string) {
   const c = providerConfig().sportmonks;
@@ -56,10 +57,78 @@ export async function fetchFixtureOdds(fixtureId:string, mode:'pre-match'|'inpla
   requireToken();
   return requestJson(url(`/odds/${mode}/fixtures/${encodeURIComponent(fixtureId)}`, { include:'market;bookmaker;fixture' }));
 }
+
+export async function fetchHeadToHead(team1ExternalId:string, team2ExternalId:string) {
+  requireToken();
+  return requestJson(url(`/fixtures/head-to-head/${encodeURIComponent(team1ExternalId)}/${encodeURIComponent(team2ExternalId)}`, { include:'participants;scores;league;venue;state' }));
+}
+
+export async function fetchStandingsBySeason(seasonExternalId:string) {
+  requireToken();
+  return requestJson(url(`/standings/seasons/${encodeURIComponent(seasonExternalId)}`, { include:'participant;details.type' }));
+}
+
+export async function fetchTeamRecentFixtures(teamExternalId:string, days=90) {
+  requireToken();
+  const end=new Date();
+  const start=new Date(end.getTime()-days*24*60*60*1000);
+  const iso=(d:Date)=>d.toISOString().slice(0,10);
+  return requestJson(url(`/fixtures/between/date/${iso(start)}/${iso(end)}/${encodeURIComponent(teamExternalId)}`, { include:'participants;scores;league;state' }));
+}
+
 export async function fetchXGoals(fixtureId:string) {
   requireToken();
   return requestJson(url(`/fixtures/${encodeURIComponent(fixtureId)}`, { include:'xgfixture.type;lineups.xGLineup.type;participants;scores' }));
 }
+
+function parseOddDate(value:any){
+  if(!value) return undefined;
+  const d=new Date(value);
+  return Number.isNaN(d.getTime())?undefined:d;
+}
+
+function flattenOdds(payload:any){
+  const data=Array.isArray(payload?.data)?payload.data:[];
+  return data.map((o:any)=>({
+    fixtureId:String(o.fixture_id ?? o.fixture?.id ?? ''),
+    bookmakerId:Number(o.bookmaker_id ?? o.bookmaker?.id) || undefined,
+    bookmakerName:o.bookmaker?.name || o.bookmaker?.title || '',
+    marketId:Number(o.market_id ?? o.market?.id) || undefined,
+    marketName:o.market?.name || o.market_description || '',
+    label:String(o.label ?? o.name ?? ''),
+    value:Number(o.value),
+    bookmakerUpdatedAt:parseOddDate(o.latest_bookmaker_update || o.last_update || o.updated_at)
+  })).filter((x:any)=>x.fixtureId && x.label && Number.isFinite(x.value) && x.value>0);
+}
+
+export async function syncFixtureOdds(match:any, mode:'pre-match'|'inplay'='pre-match') {
+  if(!match?.externalId) return 0;
+  const payload=await fetchFixtureOdds(String(match.externalId),mode);
+  const odds=flattenOdds(payload);
+  let saved=0;
+  for(const odd of odds){
+    const previous=await OddsSnapshot.findOne({matchId:match._id,bookmakerId:odd.bookmakerId,marketId:odd.marketId,label:odd.label,mode}).sort({recordedAt:-1});
+    const changed=!previous || previous.value!==odd.value;
+    if(!changed) continue;
+    const movementPct=previous?.value ? Number(((odd.value-previous.value)/previous.value*100).toFixed(2)) : undefined;
+    await OddsSnapshot.create({matchId:match._id,fixtureExternalId:odd.fixtureId,bookmakerId:odd.bookmakerId,bookmakerName:odd.bookmakerName,marketId:odd.marketId,marketName:odd.marketName,label:odd.label,value:odd.value,previousValue:previous?.value,movementPct,mode,bookmakerUpdatedAt:odd.bookmakerUpdatedAt,recordedAt:new Date()});
+    saved++;
+  }
+  return saved;
+}
+
+export async function syncUpcomingOdds(limit=40){
+  const { Match } = await import('../models/Match');
+  const now=new Date(); const end=new Date(now.getTime()+48*60*60*1000);
+  const matches=await Match.find({status:'scheduled',kickoff:{$gte:now,$lte:end},externalId:{$exists:true,$ne:''}}).sort({kickoff:1}).limit(limit);
+  let saved=0;
+  for(const match of matches){
+    try{ saved+=await syncFixtureOdds(match,'pre-match'); }catch(e){ console.error('Odds sync failed',String(match.externalId),e); }
+  }
+  return {matches:matches.length,saved};
+}
+
+export { flattenOdds };
 
 export async function syncFixtures(fixtures:any[]) {
   const { League } = await import('../models/League'); const { Team } = await import('../models/Team'); const { Match } = await import('../models/Match'); const { Season } = await import('../models/Season');
@@ -71,9 +140,9 @@ export async function syncFixtures(fixtures:any[]) {
     const league = await League.findOneAndUpdate({externalId:String(f.league_id ?? f.league?.id ?? '')},{externalId:String(f.league_id ?? f.league?.id ?? ''),name:f.league?.name||`League ${f.league_id}`,country:f.league?.country?.name||f.league?.country||'Unknown',logo:f.league?.image_path||'',active:true},{upsert:true,new:true,setDefaultsOnInsert:true});
     const seasonExternalId = f.season_id ?? f.season?.id;
     const season = seasonExternalId ? await Season.findOneAndUpdate({leagueId:league!._id,externalId:String(seasonExternalId)},{leagueId:league!._id,externalId:String(seasonExternalId),name:f.season?.name||`Season ${seasonExternalId}`,active:true},{upsert:true,new:true,setDefaultsOnInsert:true}) : null;
-    const saveTeam=async(p:any)=>Team.findOneAndUpdate({externalId:String(p?.id ?? '')},{externalId:String(p?.id ?? ''),name:p?.name||'Unknown',shortName:p?.short_code||'',logo:p?.image_path||'',active:true},{upsert:true,new:true,setDefaultsOnInsert:true});
+    const saveTeam=async(p:any)=>Team.findOneAndUpdate({externalId:String(p?.id ?? '')},{externalId:String(p?.id ?? ''),name:p?.name||'Unknown',shortName:p?.short_code||'',logo:p?.image_path || p?.image?.path || p?.logo || '',active:true},{upsert:true,new:true,setDefaultsOnInsert:true});
     const homeTeam=await saveTeam(home), awayTeam=await saveTeam(away);
-    const scores=Array.isArray(f.scores)?f.scores:[]; const currentScores=scores.filter((s:any)=>s.description==='CURRENT'); const scoreFor=(participantId:any)=>{const x=currentScores.find((s:any)=>String(s.participant_id)===String(participantId)); return Number(x?.score?.goals ?? 0)};
+    const scores=Array.isArray(f.scores)?f.scores:[]; const currentScores=scores.filter((s:any)=>/CURRENT|CURRENT_SCORE|CURRENT\s*$/i.test(String(s.description||s.type?.developer_name||s.type?.name||'')) || s.score?.goals!=null); const scoreFor=(participantId:any)=>{const candidates=currentScores.filter((s:any)=>String(s.participant_id)===String(participantId)); const x=candidates.find((s:any)=>/CURRENT/i.test(String(s.description||s.type?.developer_name||s.type?.name||''))) || candidates[0]; return Number(x?.score?.goals ?? x?.goals ?? 0)};
     const state=f.state?.developer_name||f.state?.short_name||''; const status=/LIVE|INPLAY|HALFTIME|1ST_HALF|2ND_HALF/i.test(state)?'live':/FT|FINISHED/i.test(state)?'finished':/POSTPONED/i.test(state)?'postponed':/CANCELLED/i.test(state)?'cancelled':'scheduled';
     await Match.findOneAndUpdate({externalId:String(f.id)},{externalId:String(f.id),leagueId:league!._id,seasonId:season?._id,homeTeamId:homeTeam!._id,awayTeamId:awayTeam!._id,kickoff:new Date(f.starting_at),status,homeScore:scoreFor(home?.id),awayScore:scoreFor(away?.id),venue:{name:f.venue?.name,city:f.venue?.city}},{upsert:true,new:true,setDefaultsOnInsert:true});
     upserted++;
