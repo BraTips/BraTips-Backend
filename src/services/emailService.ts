@@ -36,15 +36,28 @@ async function smtpSend(to:string,subject:string,html:string,text:string){
     host:s.host,
     port:s.port,
     secure:s.secure,
-    auth:{user:s.username || "api_token",pass:decrypt(s.passwordEncrypted)}
+    auth:{user:s.username || "api_token",pass:decrypt(s.passwordEncrypted)},
+    connectionTimeout:10000,
+    greetingTimeout:10000,
+    socketTimeout:15000
   });
-  await transporter.sendMail({
-    from:`${s.fromName} <${s.fromEmail}>`,
-    to,
-    subject,
-    html,
-    text
-  });
+  try{
+    await transporter.sendMail({
+      from:`${s.fromName} <${s.fromEmail}>`,
+      to,
+      subject,
+      html,
+      text
+    });
+  }catch(e:any){
+    if(e?.code==='ETIMEDOUT'||e?.code==='ESOCKET'||e?.code==='ECONNECTION'){
+      throw new Error(`Could not reach ${s.host}:${s.port}. This usually means outbound SMTP on this port is blocked by your hosting provider's network, not a config problem. (${e.code})`);
+    }
+    if(e?.responseCode===535||/auth/i.test(e?.message||'')){
+      throw new Error('Cloudflare rejected the credentials. Confirm the API token has "Email Sending: Edit" permission and hasn\'t expired.');
+    }
+    throw e;
+  }
   return true;
 }
 
