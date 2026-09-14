@@ -145,6 +145,22 @@ import { OddsSnapshot } from "../models/OddsSnapshot";
 import { fetchFixtureOdds, flattenOdds, fetchFixture, fetchHeadToHead, fetchStandingsBySeason, fetchTeamRecentFixtures, fetchFixtures, fetchLiveFootball, syncFixtures } from "../services/providerService";
 
 publicRouter.get("/tipsters", async (_req,res,next)=>{try{const data=await TipsterProfile.find({active:true}).sort({wins:-1,roi:-1}).limit(100).select("username bio country expertise profilePhoto totalTips wins losses profit roi currentStreak longestStreak totalRewardsPaid");res.json({data});}catch(e){next(e)}});
+publicRouter.get("/tipsters/rankings", async(req,res,next)=>{try{
+  const raw=typeof req.query.month==='string'?req.query.month:'';
+  const match=raw.match(/^(\d{4})-(\d{2})$/);
+  const now=new Date(); const year=match?Number(match[1]):now.getUTCFullYear(); const month=match?Number(match[2]):now.getUTCMonth()+1;
+  if(month<1||month>12) return res.status(400).json({message:'Invalid month'});
+  const start=new Date(Date.UTC(year,month-1,1)); const end=new Date(Date.UTC(year,month,1));
+  const rows=await Prediction.aggregate([
+    {$match:{status:{$in:['won','lost','void']},resultAt:{$gte:start,$lt:end}}},
+    {$group:{_id:'$tipsterId',settled:{$sum:{$cond:[{$in:['$status',['won','lost']]},1,0]}},wins:{$sum:{$cond:[{$eq:['$status','won']},1,0]}},losses:{$sum:{$cond:[{$eq:['$status','lost']},1,0]}},profit:{$sum:{$ifNull:['$profit',0]}},oddsSum:{$sum:{$cond:[{$in:['$status',['won','lost']]},'$odds',0]}}}},
+    {$match:{settled:{$gt:0}}},{$sort:{profit:-1,settled:-1}},{$limit:100}
+  ]);
+  const ids=rows.map((r:any)=>r._id); const profiles=await TipsterProfile.find({userId:{$in:ids},active:true}).select('userId username country profilePhoto').lean();
+  const by=new Map(profiles.map((p:any)=>[String(p.userId),p]));
+  const data=rows.map((r:any)=>{const p=by.get(String(r._id)); const settled=Number(r.settled||0); const profit=Number(r.profit||0); const odds=Number(r.oddsSum||0); return p?{userId:String(r._id),username:p.username,country:p.country,profilePhoto:p.profilePhoto,settled,wins:Number(r.wins||0),losses:Number(r.losses||0),profit,winRate:settled?Number(r.wins||0)/settled*100:0,roi:odds?profit/odds*100:0}:null}).filter(Boolean);
+  data.sort((a:any,b:any)=>b.profit-a.profit||b.roi-a.roi||b.winRate-a.winRate); res.json({data,month:`${year}-${String(month).padStart(2,'0')}`});
+}catch(e){next(e)}});
 publicRouter.get("/tipsters/:username", async(req,res,next)=>{try{const profile=await TipsterProfile.findOne({username:req.params.username,active:true}).select("userId username bio country expertise profilePhoto totalTips wins losses profit roi currentStreak longestStreak");if(!profile)return res.status(404).json({message:"Tipster not found"});const predictions=await Prediction.find({tipsterId:profile.userId,status:{ $in:["published","won","lost","void"]}}).populate({path:'matchId',populate:[{path:'homeTeamId',select:'name shortName logo'},{path:'awayTeamId',select:'name shortName logo'},{path:'leagueId',select:'name logo'}]}).sort({publishedAt:-1,createdAt:-1}).limit(100);res.json({data:{profile,predictions}});}catch(e){next(e)}});
 publicRouter.get("/predictions", async(req,res,next)=>{try{
   const page=Math.max(Number(req.query.page)||1,1),limit=Math.min(Math.max(Number(req.query.limit)||30,1),50);
