@@ -3,6 +3,8 @@ import { env } from '../config/env';
 import { Subscription, type SubscriptionPlan } from '../models/Subscription';
 import { StripeEvent } from '../models/StripeEvent';
 import { User } from '../models/User';
+import { SubscriptionRevenue } from '../models/SubscriptionRevenue';
+import { recordSubscriptionRevenue } from './rewardService';
 
 export const plans = [
   {id:'lite',name:'Lite',description:'Dropping Odds and market intelligence.',monthlyPriceId:env.STRIPE_PRICE_LITE_MONTHLY,yearlyPriceId:env.STRIPE_PRICE_LITE_YEARLY},
@@ -50,8 +52,9 @@ function unixDate(v:any){ return typeof v==='number'?new Date(v*1000):undefined;
 function statusAllowed(v:any):any{ return ['incomplete','trialing','active','past_due','canceled','unpaid','paused','incomplete_expired'].includes(v)?v:'incomplete'; }
 
 export async function handleStripeEvent(event:any){
-  if(await StripeEvent.exists({eventId:event.id})) return {duplicate:true};
-  await StripeEvent.create({eventId:event.id,type:event.type});
+  const existingEvent=await StripeEvent.findOne({eventId:event.id});
+  if(existingEvent?.processedAt) return {duplicate:true};
+  if(!existingEvent){ try{ await StripeEvent.create({eventId:event.id,type:event.type}); }catch(e:any){ if(e?.code!==11000) throw e; } }
   const obj=event.data?.object||{};
   if(event.type==='checkout.session.completed'){
     const userId=obj.metadata?.userId; const plan=obj.metadata?.plan;
@@ -72,6 +75,26 @@ export async function handleStripeEvent(event:any){
     const subId=String(obj.subscription||'');
     const sub=await Subscription.findOne({$or:[{stripeSubscriptionId:subId},{stripeCustomerId:customerId}]});
     if(sub && event.type==='invoice.paid' && sub.status==='past_due') { sub.status='active'; await sub.save(); }
+    if(event.type==='invoice.paid' && Number(obj.amount_paid||0)>0){
+      await recordSubscriptionRevenue({
+        invoiceId:String(obj.id), customerId, subscriptionId:subId,
+        amount:Number(obj.amount_paid)/100,
+        currency:String(obj.currency||env.STRIPE_CURRENCY||'GHS').toUpperCase(),
+        paidAt:unixDate(obj.status_transitions?.paid_at)||new Date(),
+        periodStart:unixDate(obj.lines?.data?.[0]?.period?.start),
+        periodEnd:unixDate(obj.lines?.data?.[0]?.period?.end)
+      });
+    }
+  }
+  if(event.type==='charge.refunded'){
+    const invoiceId=String(obj.invoice||'');
+    if(invoiceId){
+      const revenue=await SubscriptionRevenue.findOne({invoiceId});
+      if(revenue){
+        const refunded=Number(obj.amount_refunded||0)/100;
+        if(refunded >= Number(revenue.amount||0)) { revenue.amount=0; revenue.status='refunded'; await revenue.save(); }
+      }
+    }
   }
   await StripeEvent.updateOne({eventId:event.id},{$set:{processedAt:new Date()}});
   return {duplicate:false};

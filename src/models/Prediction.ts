@@ -11,4 +11,7 @@ const schema = new Schema<IPrediction>({
   confidence: { type: Number, min: 0, max: 100 }, analysis: String,
   status: { type: String, enum: ["pending", "published", "won", "lost", "void"], default: "pending", index: true }, profit: Number, publishedAt: Date, resultAt: Date, currentStreak: { type: Number, default: 0, min: 0 }
 }, { timestamps: true });
+schema.index({status:1,publishedAt:-1,createdAt:-1});
+schema.index({matchId:1,status:1});
+schema.index({tipsterId:1,status:1,publishedAt:-1});
 export const Prediction = model<IPrediction>("Prediction", schema);

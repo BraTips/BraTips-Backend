@@ -25,7 +25,7 @@ async function crud(model:any, body:any, req:any, res:any, next:any) { try { if(
 for(const [path,model,body] of [["leagues",League,leagueBody],["seasons",Season,seasonBody],["teams",Team,teamBody],["matches",Match,matchBody]] as const){ adminRouter.get(`/${path}`, (req,res,next)=>crud(model,body,req,res,next)); adminRouter.post(`/${path}`, (req,res,next)=>crud(model,body,req,res,next)); adminRouter.patch(`/${path}/:id`, (req,res,next)=>crud(model,body,req,res,next)); adminRouter.delete(`/${path}/:id`, (req,res,next)=>crud(model,body,req,res,next)); }
 
 
-adminRouter.get("/dashboard", async (_req,res,next)=>{ try { const [users,leagues,seasons,teams,matches,live,finished,tipsterPending,tipsters,predictions,approved,rejected,activeSubscriptions,pastDueSubscriptions,oddsSnapshots]=await Promise.all([User.countDocuments(),League.countDocuments(),Season.countDocuments(),Team.countDocuments(),Match.countDocuments(),Match.countDocuments({status:"live"}),Match.countDocuments({status:"finished"}),TipsterApplication.countDocuments({status:{ $in:["pending","under_review","more_info"]}}),TipsterProfile.countDocuments({active:true}),Prediction.countDocuments(),Prediction.countDocuments({status:"won"}),Prediction.countDocuments({status:"lost"}),Subscription.countDocuments({status:{ $in:["active","trialing"]}}),Subscription.countDocuments({status:"past_due"}),OddsSnapshot.countDocuments()]); const totalSettled=approved+rejected; res.json({data:{users,leagues,seasons,teams,matches,live,finished,tipsterPending,tipsters,predictions,approvedPredictions:approved,lostPredictions:rejected,winRate:totalSettled?Math.round(approved/totalSettled*1000)/10:0,activeSubscriptions,pastDueSubscriptions,oddsSnapshots}}); } catch(e){next(e);} });
+adminRouter.get("/dashboard", async (_req,res,next)=>{ try { const [users,leagues,seasons,teams,matches,live,finished,tipsterPending,tipsters,predictions,approved,rejected,activeSubscriptions,pastDueSubscriptions,oddsSnapshots,subscriptionRevenue]=await Promise.all([User.countDocuments(),League.countDocuments(),Season.countDocuments(),Team.countDocuments(),Match.countDocuments(),Match.countDocuments({status:"live"}),Match.countDocuments({status:"finished"}),TipsterApplication.countDocuments({status:{ $in:["pending","under_review","more_info"]}}),TipsterProfile.countDocuments({active:true}),Prediction.countDocuments(),Prediction.countDocuments({status:"won"}),Prediction.countDocuments({status:"lost"}),Subscription.countDocuments({status:{ $in:["active","trialing"]}}),Subscription.countDocuments({status:"past_due"}),OddsSnapshot.countDocuments(),SubscriptionRevenue.aggregate([{$match:{status:'paid'}},{$group:{_id:'$currency',amount:{$sum:'$amount'}}}])]); const totalSettled=approved+rejected; res.json({data:{users,leagues,seasons,teams,matches,live,finished,tipsterPending,tipsters,predictions,approvedPredictions:approved,lostPredictions:rejected,winRate:totalSettled?Math.round(approved/totalSettled*1000)/10:0,activeSubscriptions,pastDueSubscriptions,oddsSnapshots,subscriptionRevenue:subscriptionRevenue.reduce((sum:any,x:any)=>sum+Number(x.amount||0),0),subscriptionRevenueCurrency:subscriptionRevenue[0]?._id||'GHS'}}); } catch(e){next(e);} });
 
 adminRouter.get("/users", async (req,res)=>{ const page=Math.max(Number(req.query.page)||1,1),limit=Math.min(Math.max(Number(req.query.limit)||25,1),100),search=typeof req.query.search==="string"?req.query.search.trim():"",role=typeof req.query.role==="string"?req.query.role:undefined; const filter:any=search?{$or:[{name:{$regex:search,$options:"i"}},{email:{$regex:search,$options:"i"}}]}:{}; if(role) filter.role=role; const [data,total]=await Promise.all([User.find(filter).select("-passwordHash").sort({createdAt:-1}).skip((page-1)*limit).limit(limit),User.countDocuments(filter)]); res.json({data,pagination:{page,limit,total,pages:Math.ceil(total/limit)}}); });
 adminRouter.patch("/users/:id", async(req,res)=>{ const body=z.object({name:z.string().min(2).max(100).optional(),role:z.enum(["user","admin","tipster"]).optional(),status:z.enum(["active","suspended"]).optional()}).parse(req.body); const user=await User.findByIdAndUpdate(req.params.id,{$set:body},{new:true}).select("-passwordHash"); if(!user)return res.status(404).json({message:"User not found"}); res.json({data:user}); });
@@ -48,22 +48,52 @@ adminRouter.patch("/predictions/:id", async(req,res,next)=>{ try { const parsed=
 adminRouter.delete("/predictions/:id", async(req,res)=>{ await Prediction.findByIdAndDelete(req.params.id); res.json({ok:true}); });
 // --- Admin automation, rewards, AI picks and historical performance ---
 import { SyncJob } from '../models/SyncJob';
-import { RewardRule } from '../models/RewardRule';
-import { RewardLedger } from '../models/RewardLedger';
+import { RewardPeriod } from '../models/RewardPeriod';
+import { TipsterReward } from '../models/TipsterReward';
+import { TipsterWallet } from '../models/TipsterWallet';
+import { WalletTransaction } from '../models/WalletTransaction';
+import { WithdrawalRequest } from '../models/WithdrawalRequest';
+import { SubscriptionRevenue } from '../models/SubscriptionRevenue';
+import { RewardSettings } from '../models/RewardSettings';
 import { BetOfDay } from '../models/BetOfDay';
-import { settlePredictionRewards } from '../services/rewardService';
+import { calculateRewardPeriod, approveReward, makeRewardAvailable, settleWithdrawal, settlePredictionRewards, getRewardSettings } from '../services/rewardService';
 import { generateBetOfDay } from '../services/aiBetService';
 import { runSync } from '../services/scheduler';
 
-const rewardRuleBody=z.object({name:z.string().min(1).max(120),streak:z.coerce.number().int().min(1),amount:z.coerce.number().min(0),currency:z.string().min(1).max(10).default('GHS'),active:z.boolean().optional()});
-adminRouter.get('/rewards/rules',async(_req,res,next)=>{try{res.json({data:await RewardRule.find().sort({streak:1})});}catch(e){next(e)}});
-adminRouter.post('/rewards/rules',async(req,res,next)=>{try{res.status(201).json({data:await RewardRule.create(rewardRuleBody.parse(req.body))});}catch(e){next(e)}});
-adminRouter.patch('/rewards/rules/:id',async(req,res,next)=>{try{const item=await RewardRule.findByIdAndUpdate(req.params.id,rewardRuleBody.partial().parse(req.body),{new:true});if(!item)return res.status(404).json({message:'Reward rule not found'});res.json({data:item});}catch(e){next(e)}});
-adminRouter.delete('/rewards/rules/:id',async(req,res,next)=>{try{await RewardRule.findByIdAndDelete(req.params.id);res.json({ok:true});}catch(e){next(e)}});
-adminRouter.get('/rewards/ledger',async(req,res,next)=>{try{const status=typeof req.query.status==='string'?req.query.status:undefined;const filter:any=status?{status}:{};const data=await RewardLedger.find(filter).populate({path:'tipsterId',populate:{path:'userId',select:'name email'}}).populate('predictionId','fixture prediction status resultAt').populate('ruleId','name streak amount currency').sort({createdAt:-1}).limit(500);const totals=await RewardLedger.aggregate([{$match:filter},{$group:{_id:'$status',amount:{$sum:'$amount'},count:{$sum:1}}}]);res.json({data,totals});}catch(e){next(e)}});
-const rewardStatusBody=z.object({status:z.enum(['pending','approved','paid','cancelled']),note:z.string().max(500).optional()});
-adminRouter.patch('/rewards/ledger/:id',async(req,res,next)=>{try{const item=await RewardLedger.findById(req.params.id);if(!item)return res.status(404).json({message:'Reward not found'});const b=rewardStatusBody.parse(req.body);item.status=b.status;item.note=b.note;if(b.status==='approved')item.approvedAt=new Date();if(b.status==='paid')item.paidAt=new Date();await item.save();const p=await TipsterProfile.findById(item.tipsterId);if(p){p.totalRewardsPaid=await RewardLedger.aggregate([{$match:{tipsterId:p._id,status:'paid'}},{$group:{_id:null,total:{$sum:'$amount'}}}]).then(x=>x[0]?.total||0);p.totalRewardsEarned=await RewardLedger.aggregate([{$match:{tipsterId:p._id,status:{$in:['pending','approved','paid']}}},{$group:{_id:null,total:{$sum:'$amount'}}}]).then(x=>x[0]?.total||0);await p.save();}res.json({data:item});}catch(e){next(e)}});
-adminRouter.get('/rewards/summary',async(_req,res,next)=>{try{const [pending,approved,paid]=await Promise.all(['pending','approved','paid'].map(status=>RewardLedger.aggregate([{$match:{status}},{$group:{_id:null,amount:{$sum:'$amount'},count:{$sum:1}}}])));res.json({data:{pending:pending[0]||{amount:0,count:0},approved:approved[0]||{amount:0,count:0},paid:paid[0]||{amount:0,count:0}}});}catch(e){next(e)}});
+const rewardAllocationBody=z.object({poolPercent:z.coerce.number().min(0).max(100),platformPercent:z.coerce.number().min(0).max(100)}).refine(x=>x.platformPercent+x.poolPercent===100,{message:'Shares must total 100%'});
+
+adminRouter.get('/rewards/strategy',async(_req,res,next)=>{try{res.json({data:await getRewardSettings()});}catch(e){next(e)}});
+const rewardSettingsBody=z.object({platformSharePercent:z.coerce.number().min(0).max(100),tipsterPoolPercent:z.coerce.number().min(0).max(100),minSettledPredictions:z.coerce.number().int().min(1),minMonthlySettledPredictions:z.coerce.number().int().min(1),minWithdrawal:z.coerce.number().positive(),currency:z.string().min(3).max(10)}).refine(x=>x.platformSharePercent+x.tipsterPoolPercent===100,{message:'Shares must total 100%'});
+adminRouter.patch('/rewards/strategy',async(req,res,next)=>{try{const b=rewardSettingsBody.parse(req.body);const item=await RewardSettings.findOneAndUpdate({singletonKey:'default'},{$set:b,$setOnInsert:{singletonKey:'default'}},{upsert:true,new:true,setDefaultsOnInsert:true});res.json({data:item});}catch(e){next(e)}});
+
+adminRouter.get('/rewards/periods',async(_req,res,next)=>{try{const data=await RewardPeriod.find().sort({startDate:-1}).limit(24);res.json({data});}catch(e){next(e)}});
+adminRouter.post('/rewards/periods/calculate',async(req,res,next)=>{try{const key=typeof req.body?.month==='string'?req.body.month:'';const settings=await getRewardSettings();const allocation=rewardAllocationBody.parse({poolPercent:req.body?.tipsterPoolPercent??settings.tipsterPoolPercent,platformPercent:req.body?.platformSharePercent??settings.platformSharePercent});res.json({data:await calculateRewardPeriod(key,allocation)});}catch(e){next(e)}});
+adminRouter.get('/rewards',async(req,res,next)=>{try{const periodId=typeof req.query.periodId==='string'?req.query.periodId:undefined;const status=typeof req.query.status==='string'?req.query.status:undefined;const filter:any={};if(periodId)filter.periodId=periodId;if(status)filter.status=status;const data=await TipsterReward.find(filter).populate({path:'tipsterId',populate:{path:'userId',select:'name email'}}).populate('periodId').sort({amount:-1,createdAt:-1}).limit(500);res.json({data});}catch(e){next(e)}});
+adminRouter.get('/rewards/revenue',async(req,res,next)=>{try{
+  const days=Math.min(Math.max(Number(req.query.days)||90,7),730); const since=new Date(Date.now()-days*86400000);
+  const [total,byCurrency,byMonth]=await Promise.all([
+    SubscriptionRevenue.aggregate([{$match:{status:'paid',paidAt:{$gte:since}}},{$group:{_id:null,amount:{$sum:'$amount'},count:{$sum:1}}}]),
+    SubscriptionRevenue.aggregate([{$match:{status:'paid',paidAt:{$gte:since}}},{$group:{_id:'$currency',amount:{$sum:'$amount'},count:{$sum:1}}}]),
+    SubscriptionRevenue.aggregate([{$match:{status:'paid',paidAt:{$gte:since}}},{$group:{_id:{$dateToString:{format:'%Y-%m',date:'$paidAt'}},amount:{$sum:'$amount'},count:{$sum:1}}},{$sort:{_id:-1}}])
+  ]);
+  res.json({data:{total:total[0]||{amount:0,count:0},byCurrency,byMonth}});
+}catch(e){next(e)}});
+adminRouter.get('/rewards/summary',async(_req,res,next)=>{try{
+  const [periods,rewards,pendingWithdrawals,paidWithdrawals]=await Promise.all([
+    RewardPeriod.find().sort({startDate:-1}).limit(12),
+    TipsterReward.aggregate([{$group:{_id:'$status',amount:{$sum:'$amount'},count:{$sum:1}}}]),
+    WithdrawalRequest.aggregate([{$match:{status:{$in:['pending','approved']}}},{$group:{_id:null,amount:{$sum:'$amount'},count:{$sum:1}}}]),
+    WithdrawalRequest.aggregate([{$match:{status:'paid'}},{$group:{_id:null,amount:{$sum:'$amount'},count:{$sum:1}}}])
+  ]);
+  res.json({data:{periods,rewards,pendingWithdrawals:pendingWithdrawals[0]||{amount:0,count:0},paidWithdrawals:paidWithdrawals[0]||{amount:0,count:0}}});
+}catch(e){next(e)}});
+
+adminRouter.patch('/rewards/:id/approve',async(req,res,next)=>{try{res.json({data:await approveReward(req.params.id)});}catch(e){next(e)}});
+adminRouter.patch('/rewards/:id/available',async(req,res,next)=>{try{res.json({data:await makeRewardAvailable(req.params.id)});}catch(e){next(e)}});
+adminRouter.get('/wallets',async(_req,res,next)=>{try{const data=await TipsterWallet.find().populate({path:'tipsterId',populate:{path:'userId',select:'name email'}}).sort({availableBalance:-1});res.json({data});}catch(e){next(e)}});
+adminRouter.get('/withdrawals',async(req,res,next)=>{try{const status=typeof req.query.status==='string'?req.query.status:undefined;const filter:any=status?{status}:{};const data=await WithdrawalRequest.find(filter).populate({path:'tipsterId',populate:{path:'userId',select:'name email username'}}).sort({createdAt:-1}).limit(500);res.json({data});}catch(e){next(e)}});
+const withdrawalAdminBody=z.object({status:z.enum(['approved','paid','rejected']),adminNote:z.string().max(500).optional()});
+adminRouter.patch('/withdrawals/:id',async(req,res,next)=>{try{const b=withdrawalAdminBody.parse(req.body);res.json({data:await settleWithdrawal(req.params.id,b.status,b.adminNote)});}catch(e){next(e)}});
 
 adminRouter.get('/sync/status',async(_req,res,next)=>{try{const [latest,history]=await Promise.all([SyncJob.findOne().sort({startedAt:-1}),SyncJob.find().sort({startedAt:-1}).limit(30)]);res.json({data:{latest,history}});}catch(e){next(e)}});
 adminRouter.post('/sync/run',async(req,res,next)=>{try{const type=req.body?.type==='live'?'live':'daily';const date=typeof req.body?.date==='string'?req.body.date:new Date().toISOString().slice(0,10);const job=await runSync(type,date);res.json({data:job});}catch(e){next(e)}});
@@ -78,5 +108,3 @@ adminRouter.post('/bet-of-day/generate',async(req,res,next)=>{try{const date=typ
 const betStatus=z.object({status:z.enum(['draft','approved','published','won','lost','void']),prediction:z.string().min(1).optional(),confidence:z.coerce.number().min(0).max(100).optional(),risk:z.string().max(50).optional(),analysis:z.string().max(3000).optional()});
 adminRouter.patch('/bet-of-day/:id',async(req,res,next)=>{try{const item=await BetOfDay.findByIdAndUpdate(req.params.id,betStatus.parse(req.body),{new:true});if(!item)return res.status(404).json({message:'Bet of the Day not found'});res.json({data:item});}catch(e){next(e)}});
 
-// Seed sensible defaults once, without overwriting admin changes.
-RewardRule.countDocuments().then(async count=>{if(count===0) await RewardRule.insertMany([{name:'3-win streak',streak:3,amount:50,currency:'GHS',active:true},{name:'5-win streak',streak:5,amount:150,currency:'GHS',active:true},{name:'10-win streak',streak:10,amount:500,currency:'GHS',active:true}]);}).catch(()=>undefined);

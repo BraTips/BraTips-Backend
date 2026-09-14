@@ -20,8 +20,9 @@ const tipsterApplicationSchema = z.object({
 });
 
 
-function cookieOptions() {
-  return { httpOnly: true, secure: env.NODE_ENV === "production", sameSite: "lax" as const, path: "/api/v1/auth" };
+function cookieOptions(): import("express").CookieOptions {
+  const sameSite: "none" | "lax" = env.NODE_ENV === "production" ? "none" : "lax";
+  return { httpOnly: true, secure: env.NODE_ENV === "production", sameSite, path: "/api/v1/auth" };
 }
 
 authRouter.post("/register", async (req, res) => {
@@ -36,7 +37,7 @@ authRouter.post("/tipster-apply", async (req, res) => {
   const data = tipsterApplicationSchema.parse(req.body); const email = data.email.toLowerCase();
   if (await User.exists({ email })) return res.status(409).json({ message: "Email already registered. Sign in and contact support to submit a tipster application." });
   if (await TipsterApplication.exists({ username: data.username })) return res.status(409).json({ message: "Tipster username already in use" });
-  const user = await User.create({ name: data.name, email, passwordHash: await bcrypt.hash(data.password, 12), role: "user", status: "active" });
+  const user = await User.create({ name: data.name, email, passwordHash: await bcrypt.hash(data.password, 12), role: "user", status: "suspended" });
   const application = await TipsterApplication.create({ userId: user._id, username: data.username, country: data.country, bio: data.bio, experience: data.experience, expertise: data.expertise, profilePhoto: data.profilePhoto, socialLinks: data.socialLinks, samplePrediction: data.samplePrediction, status: "pending" });
   const admins=await User.find({role:'admin',status:'active'}).select('_id'); await Notification.insertMany(admins.map(a=>({userId:a._id,type:'tipster',title:'New tipster application',message:`@${application.username} submitted a tipster application for review.`,link:'/tipsters/applications'}))); res.status(201).json({ message: "Tipster application submitted for admin approval", applicationId: application.id, status: application.status });
 });
@@ -45,6 +46,22 @@ authRouter.post("/login", async (req, res) => {
   const data = loginSchema.parse(req.body);
   const user = await User.findOne({ email: data.email.toLowerCase() }).select("+passwordHash");
   if (!user || !(await bcrypt.compare(data.password, user.passwordHash))) return res.status(401).json({ message: "Invalid email or password" });
+  // Tipster applications must be approved before the applicant can sign in.
+  // Keep this check in login as a defence-in-depth measure for applications
+  // created before the pending-account fix, where the User record may still
+  // have status=active.
+  if (user.role !== "tipster") {
+    const application = await TipsterApplication.findOne({
+      userId: user._id,
+      status: { $in: ["pending", "under_review", "more_info", "suspended"] }
+    }).select("status");
+    if (application) {
+      return res.status(403).json({
+        message: `Tipster application is ${application.status.replace("_", " ")}. Admin approval is required before you can sign in as a tipster.`
+      });
+    }
+  }
+
   if (user.status !== "active") return res.status(403).json({ message: "Account is not active" });
 
   const placeholder = await Session.create({ userId: user._id, tokenHash: "pending-" + Date.now(), expiresAt: new Date(Date.now() + 7*86400000), userAgent: req.get("user-agent"), ip: req.ip });
@@ -63,6 +80,10 @@ authRouter.post("/refresh", async (req, res) => {
     if (!session || session.revokedAt || session.expiresAt <= new Date() || session.tokenHash !== hashToken(token)) return res.status(401).json({ message: "Session expired or revoked" });
     const user = await User.findById(payload.sub);
     if (!user || user.status !== "active") return res.status(401).json({ message: "Account is not active" });
+    if (user.role !== 'tipster') {
+      const application = await TipsterApplication.findOne({userId:user._id,status:{$in:['pending','under_review','more_info','suspended']}}).select('status');
+      if (application) return res.status(401).json({message:`Tipster application is ${application.status.replace('_',' ')}. Admin approval is required before you can continue.`});
+    }
     session.revokedAt = new Date(); await session.save();
     const replacement = await Session.create({ userId: user._id, tokenHash: "pending-" + Date.now(), expiresAt: new Date(Date.now() + 7*86400000), userAgent: req.get("user-agent"), ip: req.ip });
     const newRefresh = signRefreshToken(user.id, replacement.id);

@@ -43,11 +43,11 @@ export async function fetchLiveFootball() {
 }
 export async function fetchFixtures(date: string) {
   requireToken();
-  return requestJson(url(`/fixtures/date/${encodeURIComponent(date)}`, { include:'participants;scores;events.type;lineups.player;statistics.type;xgfixture.type;predictions.type;league;venue' }));
+  return requestJson(url(`/fixtures/date/${encodeURIComponent(date)}`, { include:'participants;scores;state;events.type;lineups.player;statistics.type;xgfixture.type;predictions.type;league;venue' }));
 }
 export async function fetchFixture(fixtureId: string) {
   requireToken();
-  return requestJson(url(`/fixtures/${encodeURIComponent(fixtureId)}`, { include:'participants;scores;events.type;lineups.player;statistics.type;xgfixture.type;predictions.type;league;venue' }));
+  return requestJson(url(`/fixtures/${encodeURIComponent(fixtureId)}`, { include:'participants;scores;state;events.type;lineups.player;statistics.type;xgfixture.type;predictions.type;league;venue' }));
 }
 export async function fetchOdds(mode:'pre-match'|'inplay'='pre-match') {
   requireToken();
@@ -150,8 +150,20 @@ export async function syncFixtures(fixtures:any[]) {
         || candidates[0];
       return Number(preferred?.score?.goals ?? preferred?.goals ?? 0);
     };
-    const state=f.state?.developer_name||f.state?.short_name||f.state?.name||'';
-    const status=/LIVE|INPLAY|HALFTIME|1ST_HALF|2ND_HALF|FIRST_HALF|SECOND_HALF|BREAK/i.test(state)?'live':/FT|FINISHED|AFTER_EXTRA_TIME|AFTER_PENALTIES|AWARDED|FT_PEN/i.test(state)?'finished':/POSTPONED/i.test(state)?'postponed':/CANCELLED|CANCELED/i.test(state)?'cancelled':'scheduled';
+    const state=[f.state?.developer_name,f.state?.short_name,f.state?.name,f.state?.description].filter(Boolean).join(' ');
+    const stateId=Number(f.state?.id);
+    const hasResult=Boolean(f.result_info||f.finished_at||f.final_score) || scores.length>0;
+    const status=/LIVE|INPLAY|HALFTIME|1ST_HALF|2ND_HALF|FIRST_HALF|SECOND_HALF|BREAK/i.test(state)
+      ? 'live'
+      : /POSTPONED/i.test(state)
+        ? 'postponed'
+        : /CANCELLED|CANCELED/i.test(state)
+          ? 'cancelled'
+          : /FT|FINISHED|AFTER_EXTRA_TIME|AFTER_PENALTIES|AWARDED|FT_PEN|ENDED|COMPLETE/i.test(state)
+            ? 'finished'
+            : (stateId===5 || stateId===6 || stateId===7 || stateId===8) && hasResult
+              ? 'finished'
+              : 'scheduled';
     await Match.findOneAndUpdate({externalId:String(f.id)},{externalId:String(f.id),leagueId:league!._id,seasonId:season?._id,homeTeamId:homeTeam!._id,awayTeamId:awayTeam!._id,kickoff:new Date(f.starting_at),status,homeScore:scoreFor(home?.id),awayScore:scoreFor(away?.id),venue:{name:f.venue?.name,city:f.venue?.city}},{upsert:true,new:true,setDefaultsOnInsert:true});
     upserted++;
   }
