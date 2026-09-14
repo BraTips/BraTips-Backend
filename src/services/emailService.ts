@@ -34,7 +34,7 @@ class SMTPClient{
     const lines=this.buffer.split("\r\n");
     for(let i=0;i<lines.length;i++){
       const line=lines[i];
-      if(/^\\d{3} /.test(line)){
+      if(/^\d{3} /.test(line)){
         const p=this.pending; this.pending=null; this.buffer=lines.slice(i+1).join("\r\n");
         const code=Number(line.slice(0,3));
         if(p.expected.includes(code))p.resolve(line); else p.reject(new Error(`SMTP ${line}`));
@@ -90,7 +90,7 @@ async function smtpSend(to:string,subject:string,html:string,text:string){
     await client.command(`MAIL FROM:<${s.fromEmail}>`,[250]);
     await client.command(`RCPT TO:<${to}>`,[250,251]);
     await client.command("DATA",[354]);
-    const body=[`From: ${s.fromName} <${s.fromEmail}>`,`To: ${to}`,`Subject: ${subject}`,`MIME-Version: 1.0`,`Content-Type: text/html; charset=UTF-8`,`Content-Transfer-Encoding: 8bit`,`Date: ${new Date().toUTCString()}`,'',html.replace(/^\./gm,'..'),''].join("\r\n")+"\\r\\n.\\r\\n";
+    const body=[`From: ${s.fromName} <${s.fromEmail}>`,`To: ${to}`,`Subject: ${subject}`,`MIME-Version: 1.0`,`Content-Type: text/html; charset=UTF-8`,`Content-Transfer-Encoding: 8bit`,`Date: ${new Date().toUTCString()}`,'',html.replace(/^\./gm,'..'),''].join("\r\n")+"\r\n.\r\n";
     client.socket.write(body); await client.waitCode([250]);
     await client.command("QUIT",[221]).catch(()=>{}); return true;
   } finally { client.close(); }
@@ -102,4 +102,4 @@ export async function sendWelcomeEmail(to:string,name:string){return sendEmail(t
 export async function sendTipsterApplicationSubmittedEmail(to:string,name:string){return sendEmail(to,'BraTipsters tipster application received',shell('Application received',`<p>Hi ${esc(name)},</p><p>We received your tipster application and it is now <strong>pending review</strong>.</p><p>Our team will review your profile and sample prediction. You will receive an email when the status changes.</p>`));}
 export async function sendTipsterApplicationEmail(to:string,name:string,status:string,notes?:string){const label=status.replace('_',' ');return sendEmail(to,`BraTipsters tipster application: ${label}`,shell('Tipster application update',`<p>Hi ${esc(name)},</p><p>Your application status is now <strong>${esc(label)}</strong>.</p>${notes?`<p><strong>Admin note:</strong> ${esc(notes)}</p>`:''}<p>Please sign in to BraTipsters to review your account.</p>`));}
 export async function sendWithdrawalEmail(to:string,name:string,status:string,amount:number){return sendEmail(to,'BraTipsters withdrawal update',shell('Withdrawal update',`<p>Hi ${esc(name)},</p><p>Your withdrawal request for <strong>GHS ${amount.toFixed(2)}</strong> is now <strong>${esc(status)}</strong>.</p><p>Approved payouts are processed manually within 1–3 business days.</p>`));}
-export async function sendTestEmail(to:string){return sendEmail(to,'BraTipsters email configuration test',shell('Email configuration works',`<p>This is a test message from BraTipsters.</p><p>Your outbound email configuration is working correctly.</p>`));}
+export async function sendTestEmail(to:string){return smtpSend(to,'BraTipsters email configuration test',shell('Email configuration works',`<p>This is a test message from BraTipsters.</p><p>Your outbound email configuration is working correctly.</p>`),'This is a test message from BraTipsters. Your outbound email configuration is working correctly.');}
