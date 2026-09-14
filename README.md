@@ -118,6 +118,6 @@ BraTipsters uses a manual tipster payout workflow. Stripe remains the subscripti
 
 ## Transactional email
 
-BraTipsters sends branded transactional email through the Cloudflare Email Service REST API over HTTPS. Configure the Cloudflare Account ID as `CLOUDFLARE_ACCOUNT_ID` in the backend environment. The Cloudflare API token is encrypted before being stored in MongoDB. The REST API endpoint is `https://api.cloudflare.com/client/v4/accounts/{account_id}/email/sending/send` and authenticates with `Authorization: Bearer <API_TOKEN>`.
+BraTipsters supports branded transactional email through SMTP configured from Admin → Settings → Email Configuration. Cloudflare provides DNS/domain management but does not itself provide outbound SMTP sending. Use an SMTP mailbox/provider and set the From address to a verified address on your domain.
 
-The sending domain must be onboarded in Cloudflare Email Service and the token must have Email Sending: Edit permission. The Admin Email Configuration page stores the token and sender address; the backend supplies the Cloudflare Account ID from the environment. Emails currently cover: new account welcome, tipster application received, tipster application decisions/updates, and tipster withdrawal status. Set `EMAIL_CONFIG_ENCRYPTION_KEY` (32+ characters) for a dedicated encryption key; if omitted, the JWT access secret is used as the key.
+Emails currently cover: new account welcome, tipster application received, tipster application decisions/updates, and tipster withdrawal status. The SMTP password is encrypted before being stored in MongoDB. Set `EMAIL_CONFIG_ENCRYPTION_KEY` (32+ characters) for a dedicated encryption key; if omitted, the JWT access secret is used as the key.
