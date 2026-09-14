@@ -11,10 +11,10 @@ const esc=(v:string)=>v.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,
 
 export async function getEmailSettings(){ const s=await EmailSettings.findOne().lean(); if(!s) return {enabled:false,host:"",port:587,secure:false,username:"",fromEmail:"",fromName:"BraTipsters",hasPassword:false}; return {enabled:s.enabled,host:s.host,port:s.port,secure:s.secure,username:s.username,fromEmail:s.fromEmail,fromName:s.fromName,hasPassword:Boolean(s.passwordEncrypted)}; }
 export async function saveEmailSettings(input:{enabled:boolean;host:string;port:number;secure:boolean;username:string;password?:string;fromEmail:string;fromName:string}){
-  const existing=await EmailSettings.findOne(); const host=input.host.trim() || "smtp.mx.cloudflare.net";
-  const port=input.port || 465;
-  const secure=host === "smtp.mx.cloudflare.net" ? true : (input.secure ?? true);
-  const username=input.username.trim() || (host === "smtp.mx.cloudflare.net" ? "api_token" : "");
+  const existing=await EmailSettings.findOne(); const host="smtp.mx.cloudflare.net";
+  const port=465;
+  const secure=true;
+  const username="api_token";
   const update:any={enabled:input.enabled,host,port,secure,username,fromEmail:input.fromEmail.trim().toLowerCase(),fromName:input.fromName.trim()};
   if(input.password) update.passwordEncrypted=encrypt(input.password);
   if(!existing && !input.password) throw new Error("SMTP password is required for the first configuration");
@@ -31,11 +31,11 @@ class SMTPClient{
   constructor(private host:string,private port:number,private useTls:boolean){}
   private check(){
     if(!this.pending)return;
-    const lines=this.buffer.split("\\r\\n");
+    const lines=this.buffer.split("\r\n");
     for(let i=0;i<lines.length;i++){
       const line=lines[i];
       if(/^\\d{3} /.test(line)){
-        const p=this.pending; this.pending=null; this.buffer=lines.slice(i+1).join("\\r\\n");
+        const p=this.pending; this.pending=null; this.buffer=lines.slice(i+1).join("\r\n");
         const code=Number(line.slice(0,3));
         if(p.expected.includes(code))p.resolve(line); else p.reject(new Error(`SMTP ${line}`));
         return;
@@ -48,7 +48,7 @@ class SMTPClient{
       this.check();
     });
   }
-  command(cmd:string,codes:number[]){this.socket.write(cmd+"\\r\\n");return this.waitCode(codes);}
+  command(cmd:string,codes:number[]){this.socket.write(cmd+"\r\n");return this.waitCode(codes);}
   async connect(){
     this.socket=this.useTls
       ? tls.connect({host:this.host,port:this.port,servername:this.host})
@@ -90,7 +90,7 @@ async function smtpSend(to:string,subject:string,html:string,text:string){
     await client.command(`MAIL FROM:<${s.fromEmail}>`,[250]);
     await client.command(`RCPT TO:<${to}>`,[250,251]);
     await client.command("DATA",[354]);
-    const body=[`From: ${s.fromName} <${s.fromEmail}>`,`To: ${to}`,`Subject: ${subject}`,`MIME-Version: 1.0`,`Content-Type: text/html; charset=UTF-8`,`Content-Transfer-Encoding: 8bit`,`Date: ${new Date().toUTCString()}`,'',html.replace(/^\\./gm,'..'),''].join("\\r\\n")+"\\r\\n.\\r\\n";
+    const body=[`From: ${s.fromName} <${s.fromEmail}>`,`To: ${to}`,`Subject: ${subject}`,`MIME-Version: 1.0`,`Content-Type: text/html; charset=UTF-8`,`Content-Transfer-Encoding: 8bit`,`Date: ${new Date().toUTCString()}`,'',html.replace(/^\./gm,'..'),''].join("\r\n")+"\\r\\n.\\r\\n";
     client.socket.write(body); await client.waitCode([250]);
     await client.command("QUIT",[221]).catch(()=>{}); return true;
   } finally { client.close(); }
