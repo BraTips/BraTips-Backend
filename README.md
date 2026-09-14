@@ -79,6 +79,7 @@ Optional AI configuration belongs only in the backend environment:
 - `GET /api/v1/predictions/:id`
 - `GET /api/v1/prediction-history`
 - `GET /api/v1/bet-of-day`
+- `GET /api/v1/bet-of-day/recent?limit=8`
 - `GET /api/v1/me/picks` (auth)
 - `POST /api/v1/me/picks` (auth)
 - `DELETE /api/v1/me/picks/:id` (auth)
