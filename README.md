@@ -103,3 +103,14 @@ Configure Stripe to send at least:
 - `invoice.payment_failed`
 
 The webhook is signature-verified and event IDs are stored for idempotent processing. Subscription access should be granted from confirmed webhook state rather than trusting the checkout success redirect.
+
+## Tipster payout workflow
+
+BraTipsters uses a manual tipster payout workflow. Stripe remains the subscription payment processor; no Paystack/automatic payout provider is required.
+
+1. A tipster submits a withdrawal request with their GHS payout method and recipient details.
+2. The requested amount is reserved from the tipster's available wallet balance.
+3. Admin reviews the recipient details and approves the request.
+4. Admin sends the money manually from the BraTipsters business bank/MoMo account.
+5. Admin marks the withdrawal as paid. The wallet ledger records the completed payout.
+6. If the request is rejected before payment, the reserved amount is returned to the tipster's available balance.

@@ -145,8 +145,9 @@ export async function makeRewardAvailable(rewardId:string){
   return reward;
 }
 
-export async function requestWithdrawal(tipsterUserId:string, amount:number, method:'mobile_money'|'bank_transfer', note?:string){
+export async function requestWithdrawal(tipsterUserId:string, amount:number, method:'mobile_money'|'bank_transfer', payoutDetails:{accountName:string;accountNumber:string;institution:string}, note?:string){
   const profile=await TipsterProfile.findOne({userId:tipsterUserId,active:true}); if(!profile) throw new Error('Active tipster profile required.');
+  if(!payoutDetails?.accountName || !payoutDetails.accountNumber || !payoutDetails.institution) throw new Error('Payout account details are required.');
   const settings=await getRewardSettings();
   if(amount<settings.minWithdrawal) throw new Error(`Minimum withdrawal is ${settings.minWithdrawal} ${settings.currency}.`);
   const wallet=await TipsterWallet.findOne({tipsterId:profile._id}); if(!wallet) throw new Error('Tipster wallet not found.');

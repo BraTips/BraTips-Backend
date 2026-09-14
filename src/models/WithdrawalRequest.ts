@@ -9,6 +9,9 @@ export interface IWithdrawalRequest extends Document {
   amount: number;
   currency: string;
   method: WithdrawalMethod;
+  payoutAccountName: string;
+  payoutAccountNumber: string;
+  payoutInstitution: string;
   note?: string;
   status: WithdrawalStatus;
   approvedAt?: Date;
@@ -25,6 +28,9 @@ const schema = new Schema<IWithdrawalRequest>({
   amount: { type: Number, required: true, min: 1 },
   currency: { type: String, default: 'GHS', uppercase: true },
   method: { type: String, enum: ['mobile_money', 'bank_transfer'], required: true },
+  payoutAccountName: { type: String, required: true, maxlength: 120 },
+  payoutAccountNumber: { type: String, required: true, maxlength: 40 },
+  payoutInstitution: { type: String, required: true, maxlength: 120 },
   note: { type: String, maxlength: 500 },
   status: { type: String, enum: ['pending', 'approved', 'paid', 'rejected', 'cancelled'], default: 'pending', index: true },
   approvedAt: Date,
