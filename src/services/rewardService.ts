@@ -1,3 +1,4 @@
+import { sendWithdrawalEmail } from './emailService';
 import { Prediction } from '../models/Prediction';
 import { TipsterProfile } from '../models/TipsterProfile';
 import { TipsterReward } from '../models/TipsterReward';
@@ -154,7 +155,7 @@ export async function requestWithdrawal(tipsterUserId:string, amount:number, met
   if(wallet.availableBalance<amount) throw new Error('Insufficient available balance.');
   const pending=await WithdrawalRequest.findOne({tipsterId:profile._id,status:{$in:['pending','approved']}});
   if(pending) throw new Error('You already have a withdrawal request being processed.');
-  const withdrawal=await WithdrawalRequest.create({tipsterId:profile._id,walletId:wallet._id,amount:round2(amount),currency:wallet.currency,method,note,status:'pending'});
+  const withdrawal=await WithdrawalRequest.create({tipsterId:profile._id,walletId:wallet._id,amount:round2(amount),currency:wallet.currency,method,payoutAccountName:payoutDetails.accountName,payoutAccountNumber:payoutDetails.accountNumber,payoutInstitution:payoutDetails.institution,note,status:'pending'});
   await TipsterWallet.updateOne({_id:wallet._id},{$inc:{availableBalance:-withdrawal.amount}});
   await WalletTransaction.create({tipsterId:profile._id,walletId:wallet._id,type:'WITHDRAWAL',amount:-withdrawal.amount,currency:wallet.currency,status:'pending',reference:`withdrawal:${withdrawal._id}`,withdrawalId:withdrawal._id,description:`Withdrawal request via ${method.replace('_',' ')}`});
   return withdrawal;
@@ -177,7 +178,7 @@ export async function settleWithdrawal(id:string,status:'approved'|'paid'|'rejec
     await TipsterProfile.updateOne({_id:withdrawal.tipsterId},{$inc:{totalRewardsPaid:withdrawal.amount}});
     await WalletTransaction.updateOne({reference:`withdrawal:${withdrawal._id}`},{$set:{status:'completed'}});
   }
-  if(adminNote!==undefined) withdrawal.adminNote=adminNote; await withdrawal.save(); return withdrawal;
+  if(adminNote!==undefined) withdrawal.adminNote=adminNote; await withdrawal.save(); const profile=await TipsterProfile.findById(withdrawal.tipsterId).populate('userId','email name'); const u:any=profile?.userId; if(u?.email) await sendWithdrawalEmail(u.email,u.name||'Tipster',withdrawal.status,withdrawal.amount); return withdrawal;
 }
 
 export async function getTipsterWallet(userId:string){

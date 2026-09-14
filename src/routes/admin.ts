@@ -38,7 +38,7 @@ const reviewSchema=z.object({ action:z.enum(["under_review","approve","reject","
 adminRouter.patch("/tipster-applications/:id/review", async(req,res)=>{ const {action,adminNotes}=reviewSchema.parse(req.body); const application=await TipsterApplication.findById(req.params.id); if(!application)return res.status(404).json({message:"Application not found"}); const auth=req as AuthRequest; const now=new Date(); const map:any={under_review:"under_review",reject:"rejected",more_info:"more_info",suspend:"suspended",approve:"approved"}; application.status=map[action]; application.adminNotes=adminNotes; application.reviewedBy=auth.user!.id as any; application.reviewedAt=now; await application.save();
   if(action==="approve"){ const user=await User.findByIdAndUpdate(application.userId,{role:"tipster",status:"active"},{new:true}); if(!user)return res.status(404).json({message:"Applicant user not found"}); await TipsterProfile.findOneAndUpdate({userId:user._id},{userId:user._id,applicationId:application._id,username:application.username,bio:application.bio,country:application.country,expertise:application.expertise,profilePhoto:application.profilePhoto,socialLinks:application.socialLinks,active:true},{upsert:true,new:true,setDefaultsOnInsert:true}); }
   if(action==="suspend"){ await User.findByIdAndUpdate(application.userId,{status:"suspended"}); await TipsterProfile.findOneAndUpdate({userId:application.userId},{active:false}); }
-  await notify(application.userId,{type:'tipster',title:`Tipster application ${application.status.replace('_',' ')}`,message: action==='approve' ? 'Your tipster application has been approved.' : action==='reject' ? 'Your tipster application was rejected.' : `Your application is now ${application.status.replace('_',' ')}.`,link:'/dashboard'}); res.json({data:application}); });
+  const applicant=await User.findById(application.userId).select('email name'); if(applicant) { const {sendTipsterApplicationEmail}=await import('../services/emailService'); await sendTipsterApplicationEmail(applicant.email,applicant.name,application.status,adminNotes); } res.json({data:application}); });
 
 adminRouter.get("/tipsters", async(_req,res)=>{ const data=await TipsterProfile.find().populate("userId","name email status").sort({createdAt:-1}); res.json({data}); });
 adminRouter.get("/predictions", async(req,res)=>{ const status=typeof req.query.status==="string"?req.query.status:undefined; const filter=status?{status}:{}; const data=await Prediction.find(filter).populate("tipsterId","name email").populate("matchId").sort({createdAt:-1}).limit(200); res.json({data}); });
@@ -56,6 +56,7 @@ import { WithdrawalRequest } from '../models/WithdrawalRequest';
 import { SubscriptionRevenue } from '../models/SubscriptionRevenue';
 import { RewardSettings } from '../models/RewardSettings';
 import { BetOfDay } from '../models/BetOfDay';
+import { getEmailSettings, saveEmailSettings, sendTestEmail } from "../services/emailService";
 import { calculateRewardPeriod, approveReward, makeRewardAvailable, settleWithdrawal, settlePredictionRewards, getRewardSettings } from '../services/rewardService';
 import { generateBetOfDay } from '../services/aiBetService';
 import { runSync } from '../services/scheduler';
@@ -108,3 +109,8 @@ adminRouter.post('/bet-of-day/generate',async(req,res,next)=>{try{const date=typ
 const betStatus=z.object({status:z.enum(['draft','approved','published','won','lost','void']),prediction:z.string().min(1).optional(),confidence:z.coerce.number().min(0).max(100).optional(),risk:z.string().max(50).optional(),analysis:z.string().max(3000).optional()});
 adminRouter.patch('/bet-of-day/:id',async(req,res,next)=>{try{const item=await BetOfDay.findByIdAndUpdate(req.params.id,betStatus.parse(req.body),{new:true});if(!item)return res.status(404).json({message:'Bet of the Day not found'});res.json({data:item});}catch(e){next(e)}});
 
+
+adminRouter.get('/email-settings',async(_req,res,next)=>{try{res.json({data:await getEmailSettings()});}catch(e){next(e)}});
+const emailSettingsBody=z.object({enabled:z.boolean(),host:z.string().max(200),port:z.coerce.number().int().min(1).max(65535),secure:z.boolean(),username:z.string().max(200),password:z.string().max(500).optional(),fromEmail:z.string().email(),fromName:z.string().min(2).max(120)});
+adminRouter.patch('/email-settings',async(req,res,next)=>{try{const b=emailSettingsBody.parse(req.body);await saveEmailSettings(b);res.json({data:await getEmailSettings(),message:'Email settings saved'});}catch(e){next(e)}});
+adminRouter.post('/email-settings/test',async(req,res,next)=>{try{const to=z.object({to:z.string().email()}).parse(req.body).to;const ok=await sendTestEmail(to);if(!ok)return res.status(400).json({message:'Email is not enabled or SMTP settings are incomplete.'});res.json({message:'Test email sent'});}catch(e){next(e)}});

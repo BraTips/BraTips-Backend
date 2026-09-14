@@ -1,3 +1,4 @@
+import { sendWelcomeEmail, sendTipsterApplicationSubmittedEmail } from "../services/emailService";
 import { Router } from "express";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
@@ -29,7 +30,7 @@ authRouter.post("/register", async (req, res) => {
   const data = registerSchema.parse(req.body); const email = data.email.toLowerCase();
   if (await User.exists({ email })) return res.status(409).json({ message: "Email already registered" });
   const user = await User.create({ name: data.name, email, passwordHash: await bcrypt.hash(data.password, 12) });
-  res.status(201).json({ user: { id: user.id, name: user.name, email: user.email, role: user.role } });
+  await sendWelcomeEmail(user.email,user.name).catch(()=>false); res.status(201).json({ user: { id: user.id, name: user.name, email: user.email, role: user.role } });
 });
 
 
@@ -39,7 +40,7 @@ authRouter.post("/tipster-apply", async (req, res) => {
   if (await TipsterApplication.exists({ username: data.username })) return res.status(409).json({ message: "Tipster username already in use" });
   const user = await User.create({ name: data.name, email, passwordHash: await bcrypt.hash(data.password, 12), role: "user", status: "suspended" });
   const application = await TipsterApplication.create({ userId: user._id, username: data.username, country: data.country, bio: data.bio, experience: data.experience, expertise: data.expertise, profilePhoto: data.profilePhoto, socialLinks: data.socialLinks, samplePrediction: data.samplePrediction, status: "pending" });
-  const admins=await User.find({role:'admin',status:'active'}).select('_id'); await Notification.insertMany(admins.map(a=>({userId:a._id,type:'tipster',title:'New tipster application',message:`@${application.username} submitted a tipster application for review.`,link:'/tipsters/applications'}))); res.status(201).json({ message: "Tipster application submitted for admin approval", applicationId: application.id, status: application.status });
+  const admins=await User.find({role:'admin',status:'active'}).select('_id'); await Notification.insertMany(admins.map(a=>({userId:a._id,type:'tipster',title:'New tipster application',message:`@${application.username} submitted a tipster application for review.`,link:'/tipsters/applications'}))); await sendTipsterApplicationSubmittedEmail(user.email,user.name).catch(()=>false); res.status(201).json({ message: "Tipster application submitted for admin approval", applicationId: application.id, status: application.status });
 });
 
 authRouter.post("/login", async (req, res) => {

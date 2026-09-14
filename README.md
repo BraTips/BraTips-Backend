@@ -114,3 +114,10 @@ BraTipsters uses a manual tipster payout workflow. Stripe remains the subscripti
 4. Admin sends the money manually from the BraTipsters business bank/MoMo account.
 5. Admin marks the withdrawal as paid. The wallet ledger records the completed payout.
 6. If the request is rejected before payment, the reserved amount is returned to the tipster's available balance.
+
+
+## Transactional email
+
+BraTipsters supports branded transactional email through SMTP configured from Admin → Settings → Email Configuration. Cloudflare provides DNS/domain management but does not itself provide outbound SMTP sending. Use an SMTP mailbox/provider and set the From address to a verified address on your domain.
+
+Emails currently cover: new account welcome, tipster application received, tipster application decisions/updates, and tipster withdrawal status. The SMTP password is encrypted before being stored in MongoDB. Set `EMAIL_CONFIG_ENCRYPTION_KEY` (32+ characters) for a dedicated encryption key; if omitted, the JWT access secret is used as the key.
