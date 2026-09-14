@@ -21,18 +21,38 @@ publicRouter.get("/matches", async (req,res)=>{
   const filter:any={}; if(typeof req.query.status==="string")filter.status=req.query.status;
   if(typeof req.query.leagueId==="string")filter.leagueId=req.query.leagueId;
   const page=Math.max(Number(req.query.page)||1,1), limit=Math.min(Math.max(Number(req.query.limit)||50,1),100);
-  const [data,total]=await Promise.all([
-    Match.find(filter).populate("leagueId","name country logo").populate("homeTeamId","name shortName logo").populate("awayTeamId","name shortName logo").sort({kickoff:1}).skip((page-1)*limit).limit(limit),
+  let [data,total]=await Promise.all([
+    Match.find(filter).populate("leagueId","name country logo").populate("homeTeamId","name shortName logo").populate("awayTeamId","name shortName logo").sort(filter.status==='finished'?{kickoff:-1}:{kickoff:1}).skip((page-1)*limit).limit(limit),
     Match.countDocuments(filter)
   ]);
+  // Results/Past Matches should not be empty just because the server was restarted.
+  if(filter.status==='finished' && total===0){
+    for(let i=1;i<=7;i++){ const d=new Date(); d.setUTCDate(d.getUTCDate()-i); try{ const payload=await fetchFixtures(d.toISOString().slice(0,10)); await syncFixtures(Array.isArray(payload?.data)?payload.data:[]); }catch(e){ console.error('Past fixture fallback failed',e); } }
+    [data,total]=await Promise.all([
+      Match.find(filter).populate("leagueId","name country logo").populate("homeTeamId","name shortName logo").populate("awayTeamId","name shortName logo").sort({kickoff:-1}).skip((page-1)*limit).limit(limit),
+      Match.countDocuments(filter)
+    ]);
+  }
   const enriched=await attachLatestOdds(data);
   res.json({data:enriched,pagination:{page,limit,total,pages:Math.ceil(total/limit)}});
 });
-publicRouter.get("/matches/today", async (_req,res)=>{
-  const start=new Date();start.setUTCHours(0,0,0,0);const end=new Date(start);end.setUTCDate(end.getUTCDate()+1);
-  const data=await Match.find({kickoff:{$gte:start,$lt:end}}).populate("leagueId","name country").populate("homeTeamId","name shortName logo").populate("awayTeamId","name shortName logo").sort({kickoff:1}); res.json({data:await attachLatestOdds(data)});
+publicRouter.get("/matches/today", async (_req,res,next)=>{
+  try {
+    const start=new Date();start.setUTCHours(0,0,0,0);const end=new Date(start);end.setUTCDate(end.getUTCDate()+1);
+    let data=await Match.find({kickoff:{$gte:start,$lt:end}}).populate("leagueId","name country logo").populate("homeTeamId","name shortName logo").populate("awayTeamId","name shortName logo").sort({kickoff:1});
+    // If the scheduler has not warmed the database yet, hydrate today's fixtures once.
+    if(data.length===0){ try { const payload=await fetchFixtures(start.toISOString().slice(0,10)); await syncFixtures(Array.isArray(payload?.data)?payload.data:[]); data=await Match.find({kickoff:{$gte:start,$lt:end}}).populate("leagueId","name country logo").populate("homeTeamId","name shortName logo").populate("awayTeamId","name shortName logo").sort({kickoff:1}); } catch(e){ console.error('Today fixture fallback failed',e); } }
+    res.json({data:await attachLatestOdds(data)});
+  } catch(e){next(e)}
 });
-publicRouter.get("/matches/live", async (_req,res)=>{const data=await Match.find({status:"live"}).populate("leagueId","name logo").populate("homeTeamId","name shortName logo").populate("awayTeamId","name shortName logo").sort({kickoff:1});res.json({data:await attachLatestOdds(data)});});
+publicRouter.get("/matches/live", async (_req,res,next)=>{
+  try {
+    let data=await Match.find({status:"live"}).populate("leagueId","name logo").populate("homeTeamId","name shortName logo").populate("awayTeamId","name shortName logo").sort({kickoff:1});
+    // Livescore fallback makes the public Live tab work even if the background scheduler restarted.
+    try { const payload=await fetchLiveFootball(); const fixtures=Array.isArray(payload?.data)?payload.data:[]; if(fixtures.length){ await syncFixtures(fixtures); data=await Match.find({status:"live"}).populate("leagueId","name logo").populate("homeTeamId","name shortName logo").populate("awayTeamId","name shortName logo").sort({kickoff:1}); } } catch(e){ if(!data.length) throw e; console.error('Live fallback failed',e); }
+    res.json({data:await attachLatestOdds(data)});
+  } catch(e){next(e)}
+});
 publicRouter.get("/matches/:id/research", async (req,res,next)=>{
   try {
     const match:any=await Match.findById(req.params.id)
@@ -42,7 +62,7 @@ publicRouter.get("/matches/:id/research", async (req,res,next)=>{
       .populate("seasonId","name externalId");
     if(!match) return res.status(404).json({message:"Match not found"});
 
-    const fixture=match.externalId ? await fetchFixture(String(match.externalId)) : {data:null};
+    const fixture=match.externalId ? await fetchFixture(String(match.externalId)).catch((e:any)=>{ console.error('Fixture research provider fallback failed',e?.message||e); return {data:null}; }) : {data:null};
     const raw=fixture?.data || {};
     const homeExternal=match.homeTeamId?.externalId;
     const awayExternal=match.awayTeamId?.externalId;
@@ -105,13 +125,15 @@ publicRouter.get('/dropping-odds',async(req,res,next)=>{
     const minDrop=Math.max(Number(req.query.minDrop)||0,0);
     const rows=await OddsSnapshot.aggregate([
       {$match:{mode:'pre-match',movementPct:{$lte:-minDrop}}},
-      {$sort:{recordedAt:-1}},
+      {$sort:{movementPct:1,recordedAt:-1}},
       {$group:{_id:{matchId:'$matchId',bookmakerId:'$bookmakerId',marketId:'$marketId',label:'$label'},row:{$first:'$$ROOT'}}},
       {$replaceRoot:{newRoot:'$row'}},
-      {$sort:{movementPct:1,recordedAt:-1}},{$limit:100}
+      {$sort:{movementPct:1,recordedAt:-1}},{$limit:1000}
     ]);
     const matchIds=rows.map(x=>x.matchId);
-    const matches=await Match.find({_id:{$in:matchIds}}).populate('leagueId','name logo').populate('homeTeamId','name shortName logo').populate('awayTeamId','name shortName logo');
+    const now=new Date();
+    const end=new Date(now.getTime()+72*60*60*1000);
+    const matches=await Match.find({_id:{$in:matchIds},kickoff:{$gte:now,$lte:end},status:{$in:['scheduled','live']}}).populate('leagueId','name logo').populate('homeTeamId','name shortName logo').populate('awayTeamId','name shortName logo');
     const byId=new Map(matches.map((m:any)=>[String(m._id),m]));
     res.json({data:rows.map(x=>({...x,matchId:byId.get(String(x.matchId))||null})).filter(x=>x.matchId)});
   }catch(e){next(e)}
@@ -120,7 +142,7 @@ import { Prediction } from "../models/Prediction";
 import { TipsterProfile } from "../models/TipsterProfile";
 import { BetOfDay } from "../models/BetOfDay";
 import { OddsSnapshot } from "../models/OddsSnapshot";
-import { fetchFixtureOdds, flattenOdds, fetchFixture, fetchHeadToHead, fetchStandingsBySeason, fetchTeamRecentFixtures } from "../services/providerService";
+import { fetchFixtureOdds, flattenOdds, fetchFixture, fetchHeadToHead, fetchStandingsBySeason, fetchTeamRecentFixtures, fetchFixtures, fetchLiveFootball, syncFixtures } from "../services/providerService";
 
 publicRouter.get("/tipsters", async (_req,res,next)=>{try{const data=await TipsterProfile.find({active:true}).sort({wins:-1,roi:-1}).limit(100).select("username bio country expertise profilePhoto totalTips wins losses profit roi currentStreak longestStreak totalRewardsPaid");res.json({data});}catch(e){next(e)}});
 publicRouter.get("/tipsters/:username", async(req,res,next)=>{try{const profile=await TipsterProfile.findOne({username:req.params.username,active:true}).select("userId username bio country expertise profilePhoto totalTips wins losses profit roi currentStreak longestStreak");if(!profile)return res.status(404).json({message:"Tipster not found"});const predictions=await Prediction.find({tipsterId:profile.userId,status:{ $in:["published","won","lost","void"]}}).populate({path:'matchId',populate:[{path:'homeTeamId',select:'name shortName logo'},{path:'awayTeamId',select:'name shortName logo'},{path:'leagueId',select:'name logo'}]}).sort({publishedAt:-1,createdAt:-1}).limit(100);res.json({data:{profile,predictions}});}catch(e){next(e)}});

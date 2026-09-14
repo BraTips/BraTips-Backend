@@ -15,7 +15,7 @@ import { errorHandler, notFound } from "./middleware/error";
 
 export const app=express();
 app.use(helmet());
-app.use(cors({ origin: (origin, cb) => { if (!origin || [env.WEB_URL, env.ADMIN_URL].includes(origin)) return cb(null, true); return cb(new Error('CORS origin denied')); }, credentials: true }));
+app.use(cors({ origin: (origin, cb) => { const local=/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin||''); if (!origin || local || [env.WEB_URL, env.ADMIN_URL].includes(origin)) return cb(null, true); return cb(new Error('CORS origin denied')); }, credentials: true }));
 app.post("/api/v1/billing/webhook", express.raw({type:"application/json", limit:"2mb"}), stripeWebhook);
 app.use(express.json({limit:"1mb"}));
 app.use(cookieParser());

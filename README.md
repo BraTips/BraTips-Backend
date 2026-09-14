@@ -1,6 +1,6 @@
-# BraTips Backend API
+# BraTipsters Backend API
 
-Express + TypeScript + MongoDB backend for the BraTips football/tipster platform.
+Express + TypeScript + MongoDB backend for the BraTipsters football/tipster platform.
 
 ## Provider API configuration
 
@@ -47,7 +47,7 @@ Provider API keys are read server-side and passed to providers from the backend.
 
 ## Sportmonks integration
 
-BraTips now uses Sportmonks as the football data source. Put the token only in the backend environment:
+BraTipsters now uses Sportmonks as the football data source. Put the token only in the backend environment:
 
 ```env
 FOOTBALL_PROVIDER=sportmonks
@@ -88,7 +88,7 @@ Optional AI configuration belongs only in the backend environment:
 
 ## Stripe subscriptions
 
-BraTips uses Stripe Checkout subscriptions and Stripe Billing Portal. The backend does not store card details. Configure the Stripe secret, webhook signing secret, and the four Stripe Price IDs in `.env` (see `.env.example`).
+BraTipsters uses Stripe Checkout subscriptions and Stripe Billing Portal. The backend does not store card details. Configure the Stripe secret, webhook signing secret, and the four Stripe Price IDs in `.env` (see `.env.example`).
 
 Webhook endpoint:
 

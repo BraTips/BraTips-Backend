@@ -6,7 +6,7 @@ import { User } from '../models/User';
 
 export const plans = [
   {id:'lite',name:'Lite',description:'Dropping Odds and market intelligence.',monthlyPriceId:env.STRIPE_PRICE_LITE_MONTHLY,yearlyPriceId:env.STRIPE_PRICE_LITE_YEARLY},
-  {id:'premium',name:'Premium',description:'Full BraTips research, premium picks and advanced match intelligence.',monthlyPriceId:env.STRIPE_PRICE_PREMIUM_MONTHLY,yearlyPriceId:env.STRIPE_PRICE_PREMIUM_YEARLY}
+  {id:'premium',name:'Premium',description:'Full BraTipsters research, premium picks and advanced match intelligence.',monthlyPriceId:env.STRIPE_PRICE_PREMIUM_MONTHLY,yearlyPriceId:env.STRIPE_PRICE_PREMIUM_YEARLY}
 ] as const;
 
 function requireStripe(){ if(!env.STRIPE_SECRET_KEY) throw new Error('Stripe is not configured. Set STRIPE_SECRET_KEY.'); return env.STRIPE_SECRET_KEY; }
@@ -34,7 +34,7 @@ export async function createCheckout(userId:string, plan:SubscriptionPlan, inter
   const config=plans.find(x=>x.id===plan); const priceId=interval==='year'?config?.yearlyPriceId:config?.monthlyPriceId;
   if(!priceId) throw new Error(`Stripe price is not configured for ${plan} ${interval}.`);
   const existing=await Subscription.findOne({userId,status:{$in:['active','trialing','past_due','incomplete']}}).sort({createdAt:-1});
-  if(existing && ['active','trialing'].includes(existing.status)) throw new Error('You already have an active BraTips subscription. Use Manage subscription to change or cancel it.');
+  if(existing && ['active','trialing'].includes(existing.status)) throw new Error('You already have an active BraTipsters subscription. Use Manage subscription to change or cancel it.');
   let customerId=existing?.stripeCustomerId;
   if(!customerId){ const customer=await stripeRequest('customers','POST',formBody({'email':user.email,'name':user.name,'metadata[userId]':String(user._id)})); customerId=customer.id; }
   const session=await stripeRequest('checkout/sessions','POST',formBody({mode:'subscription',customer:customerId,'line_items[0][price]':priceId,'line_items[0][quantity]':'1',success_url:successUrl,cancel_url:cancelUrl,'allow_promotion_codes':'true','metadata[userId]':String(user._id),'metadata[plan]':plan,'metadata[interval]':interval}));

@@ -117,9 +117,9 @@ export async function syncFixtureOdds(match:any, mode:'pre-match'|'inplay'='pre-
   return saved;
 }
 
-export async function syncUpcomingOdds(limit=40){
+export async function syncUpcomingOdds(limit=80){
   const { Match } = await import('../models/Match');
-  const now=new Date(); const end=new Date(now.getTime()+48*60*60*1000);
+  const now=new Date(); const end=new Date(now.getTime()+72*60*60*1000);
   const matches=await Match.find({status:'scheduled',kickoff:{$gte:now,$lte:end},externalId:{$exists:true,$ne:''}}).sort({kickoff:1}).limit(limit);
   let saved=0;
   for(const match of matches){
@@ -142,8 +142,16 @@ export async function syncFixtures(fixtures:any[]) {
     const season = seasonExternalId ? await Season.findOneAndUpdate({leagueId:league!._id,externalId:String(seasonExternalId)},{leagueId:league!._id,externalId:String(seasonExternalId),name:f.season?.name||`Season ${seasonExternalId}`,active:true},{upsert:true,new:true,setDefaultsOnInsert:true}) : null;
     const saveTeam=async(p:any)=>Team.findOneAndUpdate({externalId:String(p?.id ?? '')},{externalId:String(p?.id ?? ''),name:p?.name||'Unknown',shortName:p?.short_code||'',logo:p?.image_path || p?.image?.path || p?.logo || '',active:true},{upsert:true,new:true,setDefaultsOnInsert:true});
     const homeTeam=await saveTeam(home), awayTeam=await saveTeam(away);
-    const scores=Array.isArray(f.scores)?f.scores:[]; const currentScores=scores.filter((s:any)=>s.description==='CURRENT'); const scoreFor=(participantId:any)=>{const x=currentScores.find((s:any)=>String(s.participant_id)===String(participantId)); return Number(x?.score?.goals ?? 0)};
-    const state=f.state?.developer_name||f.state?.short_name||''; const status=/LIVE|INPLAY|HALFTIME|1ST_HALF|2ND_HALF/i.test(state)?'live':/FT|FINISHED/i.test(state)?'finished':/POSTPONED/i.test(state)?'postponed':/CANCELLED/i.test(state)?'cancelled':'scheduled';
+    const scores=Array.isArray(f.scores)?f.scores:[];
+    const scoreFor=(participantId:any)=>{
+      const candidates=scores.filter((s:any)=>String(s.participant_id)===String(participantId));
+      const preferred=candidates.find((s:any)=>String(s.description||'').toUpperCase()==='CURRENT')
+        || candidates.find((s:any)=>/2ND|SECOND|1ST|FIRST|HALF|FULL|FINAL|CURRENT/i.test(String(s.description||'')))
+        || candidates[0];
+      return Number(preferred?.score?.goals ?? preferred?.goals ?? 0);
+    };
+    const state=f.state?.developer_name||f.state?.short_name||f.state?.name||'';
+    const status=/LIVE|INPLAY|HALFTIME|1ST_HALF|2ND_HALF|FIRST_HALF|SECOND_HALF|BREAK/i.test(state)?'live':/FT|FINISHED|AFTER_EXTRA_TIME|AFTER_PENALTIES|AWARDED|FT_PEN/i.test(state)?'finished':/POSTPONED/i.test(state)?'postponed':/CANCELLED|CANCELED/i.test(state)?'cancelled':'scheduled';
     await Match.findOneAndUpdate({externalId:String(f.id)},{externalId:String(f.id),leagueId:league!._id,seasonId:season?._id,homeTeamId:homeTeam!._id,awayTeamId:awayTeam!._id,kickoff:new Date(f.starting_at),status,homeScore:scoreFor(home?.id),awayScore:scoreFor(away?.id),venue:{name:f.venue?.name,city:f.venue?.city}},{upsert:true,new:true,setDefaultsOnInsert:true});
     upserted++;
   }
