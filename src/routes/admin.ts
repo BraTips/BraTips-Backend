@@ -11,6 +11,7 @@ import { Prediction } from "../models/Prediction";
 import { requireAuth, requireRole, type AuthRequest } from "../middleware/auth"; import { notify, notifyMany } from '../services/notificationService'; import { TipsterFollow } from '../models/TipsterFollow'; import { UserPick } from '../models/UserPick';
 import { Subscription } from '../models/Subscription';
 import { OddsSnapshot } from '../models/OddsSnapshot';
+import { verifyEmailConfiguration } from '../services/emailService';
 
 export const adminRouter = Router();
 adminRouter.use(requireAuth, requireRole("admin"));
@@ -113,4 +114,4 @@ adminRouter.patch('/bet-of-day/:id',async(req,res,next)=>{try{const item=await B
 adminRouter.get('/email-settings',async(_req,res,next)=>{try{res.json({data:await getEmailSettings()});}catch(e){next(e)}});
 const emailSettingsBody=z.object({enabled:z.boolean(),host:z.string().max(200),port:z.coerce.number().int().min(1).max(65535),secure:z.boolean(),username:z.string().max(200),password:z.string().max(500).optional(),fromEmail:z.string().email(),fromName:z.string().min(2).max(120)});
 adminRouter.patch('/email-settings',async(req,res,next)=>{try{const b=emailSettingsBody.parse(req.body);await saveEmailSettings(b);res.json({data:await getEmailSettings(),message:'Email settings saved'});}catch(e){next(e)}});
-adminRouter.post('/email-settings/test',async(req,res,next)=>{try{const to=z.object({to:z.string().email()}).parse(req.body).to;const ok=await sendTestEmail(to);if(!ok)return res.status(400).json({message:'Email is not enabled or SMTP settings are incomplete.'});res.json({message:'Test email sent'});}catch(e){next(e)}});
+adminRouter.post('/email-settings/test',async(req,res,next)=>{try{const to=z.object({to:z.string().email()}).parse(req.body).to;const check=await verifyEmailConfiguration();if(!check.ok)return res.status(400).json({message:check.reason});const ok=await sendTestEmail(to);if(!ok)return res.status(502).json({message:'Cloudflare SMTP rejected the email. Check the API token permission, onboarded sender domain, and sender address.'});res.json({message:'Test email sent'});}catch(e){next(e)}});
