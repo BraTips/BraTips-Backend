@@ -1,6 +1,5 @@
-import net from "net";
-import tls from "tls";
 import crypto from "crypto";
+import nodemailer from "nodemailer";
 import { EmailSettings } from "../models/EmailSettings";
 import { env } from "../config/env";
 
@@ -21,55 +20,6 @@ export async function saveEmailSettings(input:{enabled:boolean;host:string;port:
   await EmailSettings.findOneAndUpdate({},update,{upsert:true,new:true,setDefaultsOnInsert:true}); return getEmailSettings();
 }
 
-type Socket=net.Socket|tls.TLSSocket;
-class SMTPClient{
-  socket!:Socket;
-  buffer="";
-  private pending: {resolve:(v:string)=>void; reject:(e:Error)=>void; expected:number[]}|null=null;
-  private onData=(d:Buffer)=>{this.buffer+=d.toString();this.check();};
-  private onError=(e:Error)=>{if(this.pending){const p=this.pending;this.pending=null;p.reject(e);}};
-  constructor(private host:string,private port:number,private useTls:boolean){}
-  private check(){
-    if(!this.pending)return;
-    const lines=this.buffer.split("\r\n");
-    for(let i=0;i<lines.length;i++){
-      const line=lines[i];
-      if(/^\d{3} /.test(line)){
-        const p=this.pending; this.pending=null; this.buffer=lines.slice(i+1).join("\r\n");
-        const code=Number(line.slice(0,3));
-        if(p.expected.includes(code))p.resolve(line); else p.reject(new Error(`SMTP ${line}`));
-        return;
-      }
-    }
-  }
-  waitCode(expected:number[]){
-    return new Promise<string>((resolve,reject)=>{
-      this.pending={resolve,reject,expected};
-      this.check();
-    });
-  }
-  command(cmd:string,codes:number[]){this.socket.write(cmd+"\r\n");return this.waitCode(codes);}
-  async connect(){
-    this.socket=this.useTls
-      ? tls.connect({host:this.host,port:this.port,servername:this.host})
-      : net.createConnection({host:this.host,port:this.port});
-    this.socket.on("data",this.onData); this.socket.once("error",this.onError);
-    await new Promise<void>((resolve,reject)=>{
-      let settled=false;
-      const ok=()=>{if(!settled){settled=true;resolve();}};
-      const fail=(e:Error)=>{if(!settled){settled=true;reject(e);}};
-      this.socket.once(this.useTls?"secureConnect":"connect",ok); this.socket.once("error",fail);
-    });
-    await this.waitCode([220]);
-  }
-  async auth(username:string,password:string){
-    await this.command("AUTH LOGIN",[334]);
-    await this.command(Buffer.from(username).toString("base64"),[334]);
-    await this.command(Buffer.from(password).toString("base64"),[235]);
-  }
-  close(){this.socket?.end();}
-}
-
 export async function verifyEmailConfiguration(){
   const s=await EmailSettings.findOne().lean();
   if(!s?.enabled) return {ok:false,reason:"Email sending is disabled in Admin → Settings → Email Configuration."};
@@ -82,18 +32,20 @@ export async function verifyEmailConfiguration(){
 async function smtpSend(to:string,subject:string,html:string,text:string){
   const check=await verifyEmailConfiguration(); if(!check.ok) throw new Error(check.reason);
   const s=await EmailSettings.findOne().lean(); if(!s) throw new Error("Email configuration not found");
-  const password=decrypt(s.passwordEncrypted); const client=new SMTPClient(s.host,s.port,s.secure);
-  try{
-    await client.connect();
-    await client.command("EHLO bratipsters.com",[250]);
-    await client.auth(s.username || "api_token",password);
-    await client.command(`MAIL FROM:<${s.fromEmail}>`,[250]);
-    await client.command(`RCPT TO:<${to}>`,[250,251]);
-    await client.command("DATA",[354]);
-    const body=[`From: ${s.fromName} <${s.fromEmail}>`,`To: ${to}`,`Subject: ${subject}`,`MIME-Version: 1.0`,`Content-Type: text/html; charset=UTF-8`,`Content-Transfer-Encoding: 8bit`,`Date: ${new Date().toUTCString()}`,'',html.replace(/^\./gm,'..'),''].join("\r\n")+"\r\n.\r\n";
-    client.socket.write(body); await client.waitCode([250]);
-    await client.command("QUIT",[221]).catch(()=>{}); return true;
-  } finally { client.close(); }
+  const transporter=nodemailer.createTransport({
+    host:s.host,
+    port:s.port,
+    secure:s.secure,
+    auth:{user:s.username || "api_token",pass:decrypt(s.passwordEncrypted)}
+  });
+  await transporter.sendMail({
+    from:`${s.fromName} <${s.fromEmail}>`,
+    to,
+    subject,
+    html,
+    text
+  });
+  return true;
 }
 
 export async function sendEmail(to:string,subject:string,html:string,text?:string){ try{return await smtpSend(to,subject,html,text||html.replace(/<[^>]+>/g,' '));}catch(e){console.error('Email send failed:',e);return false;} }
