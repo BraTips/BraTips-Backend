@@ -11,7 +11,11 @@ const esc=(v:string)=>v.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,
 
 export async function getEmailSettings(){ const s=await EmailSettings.findOne().lean(); if(!s) return {enabled:false,host:"",port:587,secure:false,username:"",fromEmail:"",fromName:"BraTipsters",hasPassword:false}; return {enabled:s.enabled,host:s.host,port:s.port,secure:s.secure,username:s.username,fromEmail:s.fromEmail,fromName:s.fromName,hasPassword:Boolean(s.passwordEncrypted)}; }
 export async function saveEmailSettings(input:{enabled:boolean;host:string;port:number;secure:boolean;username:string;password?:string;fromEmail:string;fromName:string}){
-  const existing=await EmailSettings.findOne(); const update:any={enabled:input.enabled,host:input.host.trim(),port:input.port,secure:input.secure,username:input.username.trim(),fromEmail:input.fromEmail.trim().toLowerCase(),fromName:input.fromName.trim()};
+  const existing=await EmailSettings.findOne(); const host=input.host.trim() || "smtp.mx.cloudflare.net";
+  const port=input.port || 465;
+  const secure=host === "smtp.mx.cloudflare.net" ? true : (input.secure ?? true);
+  const username=input.username.trim() || (host === "smtp.mx.cloudflare.net" ? "api_token" : "");
+  const update:any={enabled:input.enabled,host,port,secure,username,fromEmail:input.fromEmail.trim().toLowerCase(),fromName:input.fromName.trim()};
   if(input.password) update.passwordEncrypted=encrypt(input.password);
   if(!existing && !input.password) throw new Error("SMTP password is required for the first configuration");
   await EmailSettings.findOneAndUpdate({},update,{upsert:true,new:true,setDefaultsOnInsert:true}); return getEmailSettings();
@@ -50,13 +54,13 @@ class SMTPClient{
 
 async function smtpSend(to:string,subject:string,html:string,text:string){
   const s=await EmailSettings.findOne().lean();
-  if(!s?.enabled||!s.host||!s.username||!s.passwordEncrypted||!s.fromEmail) return false;
+  if(!s?.enabled||!s.host||!s.passwordEncrypted||!s.fromEmail) return false;
   const password=decrypt(s.passwordEncrypted); const client=new SMTPClient(s.host,s.port,s.secure);
   client.socket=s.secure?tls.connect({host:s.host,port:s.port,servername:s.host}):net.createConnection({host:s.host,port:s.port});
   await new Promise<void>((resolve,reject)=>{let done=false;const ok=()=>{if(!done){done=true;resolve();}};client.socket.once('connect',ok);client.socket.once('secureConnect',ok);client.socket.once('error',reject);});
   await client.waitCode([220]); await client.command('EHLO bratipsters.com',[250]);
   if(!s.secure) await client.startTls();
-  await client.auth(s.username,password);
+  await client.auth(s.username || (s.host === "smtp.mx.cloudflare.net" ? "api_token" : ""),password);
   await client.command(`MAIL FROM:<${s.fromEmail}>`,[250]); await client.command(`RCPT TO:<${to}>`,[250,251]); await client.command('DATA',[354]);
   const body=[`From: ${s.fromName} <${s.fromEmail}>`,`To: ${to}`,`Subject: ${subject}`,`MIME-Version: 1.0`,`Content-Type: text/html; charset=UTF-8`,`Content-Transfer-Encoding: 8bit`,`Date: ${new Date().toUTCString()}`,'',html.replace(/^\./gm,'..'),''].join('\r\n')+'\r\n.'+'\r\n';
   client.socket.write(body); await client.waitCode([250]); await client.command('QUIT',[221]).catch(()=>{}); client.close(); return true;
