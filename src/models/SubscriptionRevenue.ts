@@ -9,6 +9,7 @@ export interface ISubscriptionRevenue extends Document {
   stripeCustomerId?: string;
   stripeSubscriptionId?: string;
   amount: number;
+  refundedAmount: number;
   currency: string;
   status: SubscriptionRevenueStatus;
   paidAt: Date;
@@ -25,6 +26,7 @@ const schema = new Schema<ISubscriptionRevenue>({
   stripeCustomerId: String,
   stripeSubscriptionId: String,
   amount: { type: Number, required: true, min: 0 },
+  refundedAmount: { type: Number, default: 0, min: 0 },
   currency: { type: String, required: true, uppercase: true, trim: true },
   status: { type: String, enum: ['paid', 'refunded', 'chargeback'], default: 'paid', index: true },
   paidAt: { type: Date, required: true, index: true },

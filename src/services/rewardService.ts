@@ -9,6 +9,8 @@ import { WithdrawalRequest } from '../models/WithdrawalRequest';
 import { SubscriptionRevenue } from '../models/SubscriptionRevenue';
 import { UserPick } from '../models/UserPick';
 import { RewardSettings } from '../models/RewardSettings';
+import { env } from '../config/env';
+import mongoose from 'mongoose';
 
 export const TIPSTER_POOL_PERCENT = 30;
 export const PLATFORM_SHARE_PERCENT = 70;
@@ -16,7 +18,7 @@ export const MIN_SETTLED_PREDICTIONS = 50;
 export const MIN_WITHDRAWAL = 10;
 
 export async function getRewardSettings(){
-  return RewardSettings.findOneAndUpdate({singletonKey:'default'},{$setOnInsert:{singletonKey:'default',platformSharePercent:PLATFORM_SHARE_PERCENT,tipsterPoolPercent:TIPSTER_POOL_PERCENT,minSettledPredictions:MIN_SETTLED_PREDICTIONS,minMonthlySettledPredictions:5,minWithdrawal:MIN_WITHDRAWAL,currency:'GHS'}},{upsert:true,new:true,setDefaultsOnInsert:true});
+  return RewardSettings.findOneAndUpdate({singletonKey:'default'},{$setOnInsert:{singletonKey:'default',platformSharePercent:PLATFORM_SHARE_PERCENT,tipsterPoolPercent:TIPSTER_POOL_PERCENT,minSettledPredictions:MIN_SETTLED_PREDICTIONS,minMonthlySettledPredictions:5,minWithdrawal:MIN_WITHDRAWAL,currency:String(env.TIPSTER_REWARD_CURRENCY||env.STRIPE_CURRENCY||'GHS').toUpperCase()}},{upsert:true,new:true,setDefaultsOnInsert:true});
 }
 
 function round2(value:number){ return Math.round(value * 100) / 100; }
@@ -33,23 +35,13 @@ export function currentMonthKey(d=new Date()){ return `${d.getUTCFullYear()}-${S
 
 export async function recordSubscriptionRevenue(input:{invoiceId:string;customerId?:string;subscriptionId?:string;amount:number;currency:string;paidAt?:Date;periodStart?:Date;periodEnd?:Date}){
   if(!input.invoiceId || input.amount<=0) return null;
-  const existing=await SubscriptionRevenue.findOne({invoiceId:input.invoiceId});
-  if(existing) return existing;
   const subscription=input.subscriptionId ? await (await import('../models/Subscription')).Subscription.findOne({stripeSubscriptionId:input.subscriptionId}) : null;
   const userId=subscription?.userId;
-  return SubscriptionRevenue.create({
-    invoiceId:input.invoiceId,
-    subscriptionId:subscription?._id,
-    userId,
-    stripeCustomerId:input.customerId,
-    stripeSubscriptionId:input.subscriptionId,
-    amount:round2(input.amount),
-    currency:String(input.currency||'GHS').toUpperCase(),
-    status:'paid',
-    paidAt:input.paidAt||new Date(),
-    periodStart:input.periodStart,
-    periodEnd:input.periodEnd
-  });
+  return SubscriptionRevenue.findOneAndUpdate(
+    {invoiceId:input.invoiceId},
+    {$setOnInsert:{invoiceId:input.invoiceId,subscriptionId:subscription?._id,userId,stripeCustomerId:input.customerId,stripeSubscriptionId:input.subscriptionId,amount:round2(input.amount),refundedAmount:0,currency:String(input.currency||env.TIPSTER_REWARD_CURRENCY||'GHS').toUpperCase(),status:'paid',paidAt:input.paidAt||new Date(),periodStart:input.periodStart,periodEnd:input.periodEnd}},
+    {upsert:true,new:true,setDefaultsOnInsert:true}
+  );
 }
 
 function scoreTipster(rows:any[],monthlyRows:any[]){
@@ -84,7 +76,9 @@ export async function calculateRewardPeriod(key:string, options?:{poolPercent?:n
     {$group:{_id:'$currency',amount:{$sum:'$amount'}}}
   ]);
   if(revenueByCurrency.length>1) throw new Error('Reward calculation requires a single subscription currency for the period.');
-  const currency=String(revenueByCurrency[0]?._id||'GHS').toUpperCase();
+  const currency=String(revenueByCurrency[0]?._id||settings.currency||env.TIPSTER_REWARD_CURRENCY||'GHS').toUpperCase();
+  const configuredCurrency=String(settings.currency||env.TIPSTER_REWARD_CURRENCY||env.STRIPE_CURRENCY||'GHS').toUpperCase();
+  if(revenueByCurrency.length && currency!==configuredCurrency) throw new Error(`Subscription currency ${currency} does not match tipster reward currency ${configuredCurrency}. Set Stripe Prices and TIPSTER_REWARD_CURRENCY to the same settlement currency.`);
   const grossRevenue=round2(revenueByCurrency.filter(x=>String(x._id).toUpperCase()===currency).reduce((s,x)=>s+Number(x.amount||0),0));
   const period=await RewardPeriod.findOneAndUpdate({key},{$setOnInsert:{key,label,startDate:start,endDate:end,currency,platformSharePercent:platformPercent,tipsterPoolPercent:poolPercent}}, {upsert:true,new:true,setDefaultsOnInsert:true});
   if(period.status==='approved' || period.status==='paid') throw new Error(`Reward period ${key} is already approved/paid and cannot be recalculated.`);
@@ -120,65 +114,108 @@ export async function calculateRewardPeriod(key:string, options?:{poolPercent?:n
 }
 
 export async function approveReward(rewardId:string){
-  const reward=await TipsterReward.findById(rewardId); if(!reward) throw new Error('Reward not found');
-  if(reward.status!=='pending') return reward;
-  const wallet=await TipsterWallet.findOneAndUpdate({tipsterId:reward.tipsterId},{$setOnInsert:{tipsterId:reward.tipsterId,currency:reward.currency}},{upsert:true,new:true,setDefaultsOnInsert:true});
-  const txRef=`reward:${reward._id}:credit`;
-  const tx=await WalletTransaction.findOne({reference:txRef});
-  if(!tx){
-    await WalletTransaction.create({tipsterId:reward.tipsterId,walletId:wallet._id,type:'PERFORMANCE_REWARD',amount:reward.amount,currency:reward.currency,status:'pending',reference:txRef,rewardId:reward._id,description:`Performance reward for ${reward.periodId}`});
-    await TipsterWallet.updateOne({_id:wallet._id},{$inc:{pendingBalance:reward.amount,lifetimeEarned:reward.amount}});
-  }
-  reward.status='approved'; reward.approvedAt=new Date(); await reward.save();
-  await TipsterProfile.updateOne({_id:reward.tipsterId},{$inc:{totalRewardsEarned:reward.amount}});
-  return reward;
+  const session=await mongoose.startSession();
+  try {
+    let reward:any;
+    await session.withTransaction(async()=>{
+      reward=await TipsterReward.findById(rewardId).session(session);
+      if(!reward) throw new Error('Reward not found');
+      if(reward.status!=='pending') return;
+      const wallet=await TipsterWallet.findOneAndUpdate({tipsterId:reward.tipsterId},{$setOnInsert:{tipsterId:reward.tipsterId,currency:reward.currency}},{upsert:true,new:true,setDefaultsOnInsert:true,session});
+      if(!wallet) throw new Error('Unable to create tipster wallet.');
+      if(String(wallet.currency).toUpperCase()!==String(reward.currency).toUpperCase()) throw new Error(`Wallet currency ${wallet.currency} does not match reward currency ${reward.currency}.`);
+      const txRef=`reward:${reward._id}:credit`;
+      const existingTx=await WalletTransaction.findOne({reference:txRef}).session(session);
+      if(!existingTx){
+        await WalletTransaction.create([{tipsterId:reward.tipsterId,walletId:wallet._id,type:'PERFORMANCE_REWARD',amount:reward.amount,currency:reward.currency,status:'pending',reference:txRef,rewardId:reward._id,description:`Performance reward for ${reward.periodId}`}],{session});
+        await TipsterWallet.updateOne({_id:wallet._id},{$inc:{pendingBalance:reward.amount,lifetimeEarned:reward.amount}},{session});
+        await TipsterProfile.updateOne({_id:reward.tipsterId},{$inc:{totalRewardsEarned:reward.amount}},{session});
+      }
+      reward.status='approved'; reward.approvedAt=new Date(); await reward.save({session});
+    });
+    return reward;
+  } finally { await session.endSession(); }
 }
 
 export async function makeRewardAvailable(rewardId:string){
-  const reward=await TipsterReward.findById(rewardId); if(!reward) throw new Error('Reward not found');
-  if(reward.status!=='approved') throw new Error('Reward must be approved before it becomes available.');
-  const wallet=await TipsterWallet.findOne({tipsterId:reward.tipsterId}); if(!wallet) throw new Error('Tipster wallet not found');
-  const tx=await WalletTransaction.findOne({reference:`reward:${reward._id}:credit`});
-  if(tx && tx.status!=='available'){
-    tx.status='available'; await tx.save();
-    await TipsterWallet.updateOne({_id:wallet._id},{$inc:{pendingBalance:-reward.amount,availableBalance:reward.amount}});
-  }
-  return reward;
+  const session=await mongoose.startSession();
+  try {
+    let reward:any;
+    await session.withTransaction(async()=>{
+      reward=await TipsterReward.findById(rewardId).session(session); if(!reward) throw new Error('Reward not found');
+      if(reward.status!=='approved') throw new Error('Reward must be approved before it becomes available.');
+      const wallet=await TipsterWallet.findOne({tipsterId:reward.tipsterId}).session(session); if(!wallet) throw new Error('Tipster wallet not found');
+      if(String(wallet.currency).toUpperCase()!==String(reward.currency).toUpperCase()) throw new Error(`Wallet currency ${wallet.currency} does not match reward currency ${reward.currency}.`);
+      const tx=await WalletTransaction.findOne({reference:`reward:${reward._id}:credit`}).session(session);
+      if(!tx) throw new Error('Reward wallet transaction not found.');
+      if(tx.status==='pending'){
+        const moved=await TipsterWallet.updateOne({_id:wallet._id,pendingBalance:{$gte:reward.amount}},{$inc:{pendingBalance:-reward.amount,availableBalance:reward.amount}},{session});
+        if(moved.modifiedCount!==1) throw new Error('Reward pending balance is inconsistent.');
+        tx.status='available'; await tx.save({session});
+      } else if(tx.status!=='available') throw new Error(`Reward transaction is ${tx.status} and cannot be made available.`);
+    });
+    return reward;
+  } finally { await session.endSession(); }
 }
 
 export async function requestWithdrawal(tipsterUserId:string, amount:number, method:'mobile_money'|'bank_transfer', payoutDetails:{accountName:string;accountNumber:string;institution:string}, note?:string){
   const profile=await TipsterProfile.findOne({userId:tipsterUserId,active:true}); if(!profile) throw new Error('Active tipster profile required.');
   if(!payoutDetails?.accountName || !payoutDetails.accountNumber || !payoutDetails.institution) throw new Error('Payout account details are required.');
   const settings=await getRewardSettings();
-  if(amount<settings.minWithdrawal) throw new Error(`Minimum withdrawal is ${settings.minWithdrawal} ${settings.currency}.`);
+  const normalizedAmount=round2(amount);
+  if(normalizedAmount<settings.minWithdrawal) throw new Error(`Minimum withdrawal is ${settings.minWithdrawal} ${settings.currency}.`);
   const wallet=await TipsterWallet.findOne({tipsterId:profile._id}); if(!wallet) throw new Error('Tipster wallet not found.');
-  if(wallet.availableBalance<amount) throw new Error('Insufficient available balance.');
-  const pending=await WithdrawalRequest.findOne({tipsterId:profile._id,status:{$in:['pending','approved']}});
-  if(pending) throw new Error('You already have a withdrawal request being processed.');
-  const withdrawal=await WithdrawalRequest.create({tipsterId:profile._id,walletId:wallet._id,amount:round2(amount),currency:wallet.currency,method,payoutAccountName:payoutDetails.accountName,payoutAccountNumber:payoutDetails.accountNumber,payoutInstitution:payoutDetails.institution,note,status:'pending'});
-  await TipsterWallet.updateOne({_id:wallet._id},{$inc:{availableBalance:-withdrawal.amount}});
-  await WalletTransaction.create({tipsterId:profile._id,walletId:wallet._id,type:'WITHDRAWAL',amount:-withdrawal.amount,currency:wallet.currency,status:'pending',reference:`withdrawal:${withdrawal._id}`,withdrawalId:withdrawal._id,description:`Withdrawal request via ${method.replace('_',' ')}`});
-  return withdrawal;
+  if(String(wallet.currency).toUpperCase()!==String(settings.currency).toUpperCase()) throw new Error(`Wallet currency ${wallet.currency} does not match reward currency ${settings.currency}.`);
+  const session=await mongoose.startSession();
+  try {
+    let withdrawal:any;
+    await session.withTransaction(async()=>{
+      const pending=await WithdrawalRequest.findOne({tipsterId:profile._id,status:{$in:['pending','approved']}}).session(session);
+      if(pending) throw new Error('You already have a withdrawal request being processed.');
+      const debited=await TipsterWallet.findOneAndUpdate({_id:wallet._id,availableBalance:{$gte:normalizedAmount},currency:wallet.currency},{$inc:{availableBalance:-normalizedAmount}},{new:true,session});
+      if(!debited) throw new Error('Insufficient available balance.');
+      withdrawal=(await WithdrawalRequest.create([{tipsterId:profile._id,walletId:wallet._id,amount:normalizedAmount,currency:wallet.currency,method,payoutAccountName:payoutDetails.accountName,payoutAccountNumber:payoutDetails.accountNumber,payoutInstitution:payoutDetails.institution,note,status:'pending'}],{session}))[0];
+      await WalletTransaction.create([{tipsterId:profile._id,walletId:wallet._id,type:'WITHDRAWAL',amount:-normalizedAmount,currency:wallet.currency,status:'pending',reference:`withdrawal:${withdrawal._id}`,withdrawalId:withdrawal._id,description:`Withdrawal request via ${method.replace('_',' ')}`}],{session});
+    });
+    return withdrawal;
+  } finally { await session.endSession(); }
 }
 
 export async function settleWithdrawal(id:string,status:'approved'|'paid'|'rejected',adminNote?:string){
-  const withdrawal=await WithdrawalRequest.findById(id); if(!withdrawal) throw new Error('Withdrawal request not found');
-  if(status==='approved') { withdrawal.status='approved'; withdrawal.approvedAt=new Date(); }
-  if(status==='rejected') {
-    if(withdrawal.status==='pending' || withdrawal.status==='approved'){
-      await TipsterWallet.updateOne({_id:withdrawal.walletId},{$inc:{availableBalance:withdrawal.amount}});
-      await WalletTransaction.updateOne({reference:`withdrawal:${withdrawal._id}`},{$set:{status:'cancelled'}});
-    }
-    withdrawal.status='rejected'; withdrawal.rejectedAt=new Date();
-  }
-  if(status==='paid') {
-    if(!['approved','pending'].includes(withdrawal.status)) throw new Error('Withdrawal cannot be marked paid from its current status.');
-    withdrawal.status='paid'; withdrawal.paidAt=new Date();
-    await TipsterWallet.updateOne({_id:withdrawal.walletId},{$inc:{lifetimeWithdrawn:withdrawal.amount}});
-    await TipsterProfile.updateOne({_id:withdrawal.tipsterId},{$inc:{totalRewardsPaid:withdrawal.amount}});
-    await WalletTransaction.updateOne({reference:`withdrawal:${withdrawal._id}`},{$set:{status:'completed'}});
-  }
-  if(adminNote!==undefined) withdrawal.adminNote=adminNote; await withdrawal.save(); const profile=await TipsterProfile.findById(withdrawal.tipsterId).populate('userId','email name'); const u:any=profile?.userId; if(u?.email) await sendWithdrawalEmail(u.email,u.name||'Tipster',withdrawal.status,withdrawal.amount); return withdrawal;
+  const session=await mongoose.startSession();
+  let emailPayload:any;
+  try {
+    let withdrawal:any;
+    await session.withTransaction(async()=>{
+      withdrawal=await WithdrawalRequest.findById(id).session(session); if(!withdrawal) throw new Error('Withdrawal request not found');
+      if(adminNote!==undefined) withdrawal.adminNote=adminNote;
+      if(status==='approved'){
+        if(withdrawal.status!=='pending') { if(withdrawal.status==='approved'){ emailPayload={status:withdrawal.status,amount:withdrawal.amount,tipsterId:withdrawal.tipsterId}; return; } throw new Error('Only pending withdrawals can be approved.'); }
+        withdrawal.status='approved'; withdrawal.approvedAt=new Date(); await withdrawal.save({session});
+      }
+      if(status==='rejected'){
+        if(['rejected','cancelled'].includes(withdrawal.status)){ emailPayload={status:withdrawal.status,amount:withdrawal.amount,tipsterId:withdrawal.tipsterId}; return; }
+        if(['pending','approved'].includes(withdrawal.status)){
+          await TipsterWallet.updateOne({_id:withdrawal.walletId},{$inc:{availableBalance:withdrawal.amount}},{session});
+          await WalletTransaction.updateOne({reference:`withdrawal:${withdrawal._id}`,status:'pending'},{$set:{status:'cancelled'}},{session});
+        }
+        withdrawal.status='rejected'; withdrawal.rejectedAt=new Date(); await withdrawal.save({session});
+      }
+      if(status==='paid'){
+        if(withdrawal.status==='paid'){ emailPayload={status:withdrawal.status,amount:withdrawal.amount,tipsterId:withdrawal.tipsterId}; return; }
+        if(!['approved','pending'].includes(withdrawal.status)) throw new Error('Withdrawal cannot be marked paid from its current status.');
+        withdrawal.status='paid'; withdrawal.paidAt=new Date(); await withdrawal.save({session});
+        await TipsterWallet.updateOne({_id:withdrawal.walletId},{$inc:{lifetimeWithdrawn:withdrawal.amount}},{session});
+        await TipsterProfile.updateOne({_id:withdrawal.tipsterId},{$inc:{totalRewardsPaid:withdrawal.amount}},{session});
+        await WalletTransaction.updateOne({reference:`withdrawal:${withdrawal._id}`,status:'pending'},{$set:{status:'completed'}},{session});
+      }
+      emailPayload={status:withdrawal.status,amount:withdrawal.amount,tipsterId:withdrawal.tipsterId};
+    });
+    const profile=await TipsterProfile.findById(emailPayload.tipsterId).populate('userId','email name');
+    const u:any=profile?.userId;
+    if(u?.email) await sendWithdrawalEmail(u.email,u.name||'Tipster',emailPayload.status,emailPayload.amount).catch(()=>{});
+    return withdrawal;
+  } finally { await session.endSession(); }
 }
 
 export async function getTipsterWallet(userId:string){
@@ -190,6 +227,23 @@ export async function getTipsterWallet(userId:string){
     WithdrawalRequest.find({tipsterId:profile._id}).sort({createdAt:-1}).limit(30)
   ]);
   return {wallet,transactions,withdrawals,settings};
+}
+
+export async function getTipsterWalletIntegrity(userId:string){
+  const profile=await TipsterProfile.findOne({userId}); if(!profile) throw new Error('Tipster profile not found');
+  const wallet=await TipsterWallet.findOne({tipsterId:profile._id}); if(!wallet) throw new Error('Tipster wallet not found');
+  const [pending,available,withdrawals]=await Promise.all([
+    WalletTransaction.aggregate([{$match:{tipsterId:profile._id,type:{$in:['PERFORMANCE_REWARD','BONUS','ADJUSTMENT']},status:'pending'}},{$group:{_id:null,amount:{$sum:'$amount'}}}]),
+    WalletTransaction.aggregate([{$match:{tipsterId:profile._id,type:{$in:['PERFORMANCE_REWARD','BONUS','ADJUSTMENT']},status:{$in:['available','completed']}}},{$group:{_id:null,amount:{$sum:'$amount'}}}]),
+    WalletTransaction.aggregate([{$match:{tipsterId:profile._id,type:'WITHDRAWAL',status:{$in:['pending','completed']}}},{$group:{_id:null,amount:{$sum:'$amount'}}}])
+  ]);
+  const expectedPending=round2(Number(pending[0]?.amount||0));
+  const expectedAvailable=round2(Number(available[0]?.amount||0)+Number(withdrawals[0]?.amount||0));
+  const pendingOk=Math.abs(wallet.pendingBalance-expectedPending)<0.01;
+  const availableOk=Math.abs(wallet.availableBalance-expectedAvailable)<0.01;
+  const nonNegative=wallet.availableBalance>=0 && wallet.pendingBalance>=0;
+  const currencyConsistent=String(wallet.currency).toUpperCase()===String((await getRewardSettings()).currency).toUpperCase();
+  return {ok:pendingOk&&availableOk&&nonNegative&&currencyConsistent,currency:wallet.currency,balances:{available:round2(wallet.availableBalance),pending:round2(wallet.pendingBalance),lifetimeEarned:round2(wallet.lifetimeEarned),lifetimeWithdrawn:round2(wallet.lifetimeWithdrawn)},ledger:{expectedAvailable,expectedPending,withdrawalLedger:round2(Number(withdrawals[0]?.amount||0)),availableCredits:round2(Number(available[0]?.amount||0))},checks:{pendingBalance:pendingOk,availableBalance:availableOk,nonNegative,currencyConsistent}};
 }
 
 export async function settlePredictionRewards(predictionId:string){

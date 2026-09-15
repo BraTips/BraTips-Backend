@@ -88,7 +88,7 @@ Optional AI configuration belongs only in the backend environment:
 
 ## Stripe subscriptions
 
-BraTipsters uses Stripe Checkout subscriptions and Stripe Billing Portal. The backend does not store card details. Configure the Stripe secret, webhook signing secret, and the four Stripe Price IDs in `.env` (see `.env.example`).
+BraTipsters uses Stripe Checkout subscriptions and Stripe Billing Portal. The backend does not store card details. Configure the Stripe secret, webhook signing secret, Stripe Currency, Tipster Reward Currency, and the four Stripe Price IDs in `.env` (see `.env.example.local`). **Stripe Prices and tipster rewards must use the same currency; the wallet does not perform FX conversion.**
 
 Webhook endpoint:
 
@@ -102,14 +102,14 @@ Configure Stripe to send at least:
 - `invoice.paid`
 - `invoice.payment_failed`
 
-The webhook is signature-verified and event IDs are stored for idempotent processing. Subscription access should be granted from confirmed webhook state rather than trusting the checkout success redirect.
+The webhook is signature-verified against the raw request body. Events use an atomic processing claim with stale-lock recovery so concurrent/retried deliveries do not double-credit revenue or wallet balances. Subscription access is driven by the Stripe subscription/invoice lifecycle rather than trusting the checkout success redirect. Use `GET /api/v1/billing/webhook-health` while authenticated to inspect webhook processing health.
 
 ## Tipster payout workflow
 
 BraTipsters uses a manual tipster payout workflow. Stripe remains the subscription payment processor; no Paystack/automatic payout provider is required.
 
-1. A tipster submits a withdrawal request with their GHS payout method and recipient details.
-2. The requested amount is reserved from the tipster's available wallet balance.
+1. A tipster submits a withdrawal request with their configured wallet currency and recipient details.
+2. The requested amount is atomically reserved from the tipster's available wallet balance.
 3. Admin reviews the recipient details and approves the request.
 4. Admin sends the money manually from the BraTipsters business bank/MoMo account.
 5. Admin marks the withdrawal as paid. The wallet ledger records the completed payout.
@@ -120,4 +120,4 @@ BraTipsters uses a manual tipster payout workflow. Stripe remains the subscripti
 
 BraTipsters supports branded transactional email through SMTP configured from Admin → Settings → Email Configuration. Cloudflare provides DNS/domain management but does not itself provide outbound SMTP sending. Use an SMTP mailbox/provider and set the From address to a verified address on your domain.
 
-Emails currently cover: new account welcome, tipster application received, tipster application decisions/updates, and tipster withdrawal status. The SMTP password is encrypted before being stored in MongoDB. Set `EMAIL_CONFIG_ENCRYPTION_KEY` (32+ characters) for a dedicated encryption key; if omitted, the JWT access secret is used as the key.
+Emails currently cover: new account welcome, tipster application received, tipster application decisions/updates, and tipster withdrawal status. The SMTP password is encrypted before being stored in MongoDB. Wallet reward approval, release, and withdrawal reservation use MongoDB transactions, so the production database must support transactions (MongoDB Atlas/replica set). Set `EMAIL_CONFIG_ENCRYPTION_KEY` (32+ characters) for a dedicated encryption key; if omitted, the JWT access secret is used as the key.

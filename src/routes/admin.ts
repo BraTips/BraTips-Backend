@@ -58,7 +58,7 @@ import { SubscriptionRevenue } from '../models/SubscriptionRevenue';
 import { RewardSettings } from '../models/RewardSettings';
 import { BetOfDay } from '../models/BetOfDay';
 import { getEmailSettings, saveEmailSettings, sendTestEmail } from "../services/emailService";
-import { calculateRewardPeriod, approveReward, makeRewardAvailable, settleWithdrawal, settlePredictionRewards, getRewardSettings } from '../services/rewardService';
+import { calculateRewardPeriod, approveReward, makeRewardAvailable, settleWithdrawal, settlePredictionRewards, getRewardSettings, getTipsterWalletIntegrity } from '../services/rewardService';
 import { generateBetOfDay } from '../services/aiBetService';
 import { generateDailyPredictions, generateWeeklyPredictions } from '../services/predictionEngine';
 import { runSync } from '../services/scheduler';
@@ -94,6 +94,7 @@ adminRouter.get('/rewards/summary',async(_req,res,next)=>{try{
 adminRouter.patch('/rewards/:id/approve',async(req,res,next)=>{try{res.json({data:await approveReward(req.params.id)});}catch(e){next(e)}});
 adminRouter.patch('/rewards/:id/available',async(req,res,next)=>{try{res.json({data:await makeRewardAvailable(req.params.id)});}catch(e){next(e)}});
 adminRouter.get('/wallets',async(_req,res,next)=>{try{const data=await TipsterWallet.find().populate({path:'tipsterId',populate:{path:'userId',select:'name email'}}).sort({availableBalance:-1});res.json({data});}catch(e){next(e)}});
+adminRouter.get('/wallets/:tipsterId/integrity',async(req,res,next)=>{try{const wallet=await TipsterWallet.findById(req.params.tipsterId);if(!wallet)return res.status(404).json({message:'Tipster wallet not found'});const profile=await TipsterProfile.findById(wallet.tipsterId).select('userId');if(!profile)return res.status(404).json({message:'Tipster profile not found'});res.json({data:await getTipsterWalletIntegrity(String(profile.userId))});}catch(e){next(e)}});
 adminRouter.get('/withdrawals',async(req,res,next)=>{try{const status=typeof req.query.status==='string'?req.query.status:undefined;const filter:any=status?{status}:{};const data=await WithdrawalRequest.find(filter).populate({path:'tipsterId',populate:{path:'userId',select:'name email username'}}).sort({createdAt:-1}).limit(500);res.json({data});}catch(e){next(e)}});
 const withdrawalAdminBody=z.object({status:z.enum(['approved','paid','rejected']),adminNote:z.string().max(500).optional()});
 adminRouter.patch('/withdrawals/:id',async(req,res,next)=>{try{const b=withdrawalAdminBody.parse(req.body);res.json({data:await settleWithdrawal(req.params.id,b.status,b.adminNote)});}catch(e){next(e)}});
