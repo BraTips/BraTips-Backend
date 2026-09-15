@@ -211,9 +211,20 @@ publicRouter.get("/tipsters/:username", async(req,res,next)=>{try{const profile=
 publicRouter.get("/predictions", optionalAuth, async(req:AuthRequest,res,next)=>{try{
   const page=Math.max(Number(req.query.page)||1,1),limit=Math.min(Math.max(Number(req.query.limit)||30,1),50);
   const search=typeof req.query.search==='string'?req.query.search.trim():'';
+  const market=typeof req.query.market==='string'?req.query.market.trim().toLowerCase():'';
   const horizon=typeof req.query.horizon==='string' && ['daily','weekly'].includes(req.query.horizon)?req.query.horizon:undefined;
   const filter:any={status:{ $in:["published","won","lost","void"]}};
   if(horizon)filter.horizon=horizon;
+  if(market){
+    const marketMap:any={
+      'home-win':'Home Win','away-win':'Away Win','draw':'Draw',
+      'double-chance-1x':'Double Chance 1X','double-chance-x2':'Double Chance X2','double-chance-12':'Double Chance 12',
+      'over-2-5':'Over 2.5 Goals','under-2-5':'Under 2.5 Goals',
+      'btts':'Both Teams To Score','btts-no':'BTTS - No','corners':'Corners'
+    };
+    const target=marketMap[market];
+    if(target) filter.prediction=market==='corners'?{$regex:'corner',$options:'i'}:target;
+  }
   if(search)filter.$or=[{fixture:{$regex:search,$options:'i'}},{league:{$regex:search,$options:'i'}},{prediction:{$regex:search,$options:'i'}}];
   const premium=Boolean(req.user && await Subscription.exists({userId:req.user.id,plan:'premium',status:{$in:['active','trialing']}}));
   const query=Prediction.find(filter)
