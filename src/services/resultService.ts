@@ -38,7 +38,7 @@ async function settlePrediction(p:any, status:Exclude<Evaluation,null>){
   const picks=await UserPick.find({predictionId:p._id,status:'open'});
   await UserPick.updateMany({predictionId:p._id,status:'open'},{$set:{status}});
   await notifyMany(picks.map(x=>x.userId),{type:'result',title:`Your pick is ${status.toUpperCase()}`,message:`${p.fixture}: ${p.prediction} was settled as ${status}.`,link:'/dashboard'});
-  const followers=await TipsterFollow.find({tipsterId:p.tipsterId}).select('userId');
+  const followers=p.tipsterId ? await TipsterFollow.find({tipsterId:p.tipsterId}).select('userId') : [];
   await notifyMany(followers.map(x=>x.userId),{type:'result',title:`Prediction ${status.toUpperCase()}`,message:`${p.fixture}: ${p.prediction} was settled as ${status}.`,link:'/history'});
 }
 

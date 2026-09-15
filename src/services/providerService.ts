@@ -58,6 +58,11 @@ export async function fetchFixtureOdds(fixtureId:string, mode:'pre-match'|'inpla
   return requestJson(url(`/odds/${mode}/fixtures/${encodeURIComponent(fixtureId)}`, { include:'market;bookmaker;fixture' }));
 }
 
+export async function fetchFixtureValueBets(fixtureId:string) {
+  requireToken();
+  return requestJson(url(`/predictions/value-bets/fixtures/${encodeURIComponent(fixtureId)}`, { include:'type;fixture' }));
+}
+
 export async function fetchHeadToHead(team1ExternalId:string, team2ExternalId:string) {
   requireToken();
   return requestJson(url(`/fixtures/head-to-head/${encodeURIComponent(team1ExternalId)}/${encodeURIComponent(team2ExternalId)}`, { include:'participants;scores;league;venue;state' }));

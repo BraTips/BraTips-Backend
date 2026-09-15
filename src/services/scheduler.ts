@@ -1,6 +1,7 @@
 import { fetchLiveFootball, fetchFixtures, syncFixtures, syncUpcomingOdds } from './providerService';
 import { SyncJob } from '../models/SyncJob';
 import { generateBetOfDay } from './aiBetService';
+import { generateDailyPredictions, generateWeeklyPredictions } from './predictionEngine';
 import { settleFinishedResults } from './resultService';
 import { calculateRewardPeriod, currentMonthKey } from './rewardService';
 import { RewardPeriod } from '../models/RewardPeriod';
@@ -39,9 +40,10 @@ async function syncRecentHistory(){
 export function startScheduler(){
   // Prime the database immediately instead of waiting for the 02:00 daily job.
   void syncCoreDates();
+  void (async()=>{try{const today=isoDate(new Date()); await Promise.all([syncDateSafe(shiftDate(2)),syncDateSafe(shiftDate(3)),syncDateSafe(shiftDate(4)),syncDateSafe(shiftDate(5)),syncDateSafe(shiftDate(6)),syncDateSafe(shiftDate(7))]); await syncUpcomingOdds(); await generateDailyPredictions(today); await generateWeeklyPredictions(today);}catch(e){console.error('Prediction engine warmup failed',e)}})();
   void syncRecentHistory();
 
-  const scheduleDaily=()=>{setTimeout(async()=>{const date=isoDate(new Date());try{await runSync('daily',date);await generateBetOfDay(date);if(new Date().getUTCDate()===1) await calculatePreviousMonthRewards();}catch(e){console.error('Daily scheduler failed',e);}finally{scheduleDaily();}},msUntilNext(2,0));};
+  const scheduleDaily=()=>{setTimeout(async()=>{const date=isoDate(new Date());try{await runSync('daily',date);await syncDateSafe(shiftDate(2));await syncDateSafe(shiftDate(3));await syncDateSafe(shiftDate(4));await syncDateSafe(shiftDate(5));await syncDateSafe(shiftDate(6));await syncDateSafe(shiftDate(7));await syncUpcomingOdds();await generateDailyPredictions(date);await generateWeeklyPredictions(date);await generateBetOfDay(date);if(new Date().getUTCDate()===1) await calculatePreviousMonthRewards();}catch(e){console.error('Daily scheduler failed',e);}finally{scheduleDaily();}},msUntilNext(2,0));};
   scheduleDaily();
 
   const fixtureRefresh=async()=>{try{await syncCoreDates();}catch(e){console.error('Core fixture refresh failed',e)}finally{setTimeout(fixtureRefresh,10*60*1000);}};

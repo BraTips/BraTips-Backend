@@ -1,8 +1,12 @@
 import { Router } from "express";
+import { optionalAuth, type AuthRequest } from "../middleware/auth";
+import { Subscription } from "../models/Subscription";
 import { League } from "../models/League";
 import { Season } from "../models/Season";
 import { Team } from "../models/Team";
 import { Match } from "../models/Match";
+import { OddsSnapshot } from "../models/OddsSnapshot";
+import { fetchFixtures, fetchLiveFootball, fetchFixture, fetchFixtureOdds, fetchHeadToHead, fetchStandingsBySeason, fetchTeamRecentFixtures, flattenOdds, syncFixtures } from "../services/providerService";
 export const publicRouter = Router();
 async function attachLatestOdds(data:any[]){
   const ids=data.map((m:any)=>m._id); if(!ids.length)return data;
@@ -141,8 +145,6 @@ publicRouter.get('/dropping-odds',async(req,res,next)=>{
 import { Prediction } from "../models/Prediction";
 import { TipsterProfile } from "../models/TipsterProfile";
 import { BetOfDay } from "../models/BetOfDay";
-import { OddsSnapshot } from "../models/OddsSnapshot";
-import { fetchFixtureOdds, flattenOdds, fetchFixture, fetchHeadToHead, fetchStandingsBySeason, fetchTeamRecentFixtures, fetchFixtures, fetchLiveFootball, syncFixtures } from "../services/providerService";
 
 publicRouter.get("/tipsters", async (_req,res,next)=>{try{const data=await TipsterProfile.find({active:true}).sort({wins:-1,roi:-1}).limit(100).select("username bio country expertise profilePhoto totalTips wins losses profit roi currentStreak longestStreak totalRewardsPaid");res.json({data});}catch(e){next(e)}});
 publicRouter.get("/tipsters/rankings", async(req,res,next)=>{try{
@@ -162,13 +164,16 @@ publicRouter.get("/tipsters/rankings", async(req,res,next)=>{try{
   data.sort((a:any,b:any)=>b.profit-a.profit||b.roi-a.roi||b.winRate-a.winRate); res.json({data,month:`${year}-${String(month).padStart(2,'0')}`});
 }catch(e){next(e)}});
 publicRouter.get("/tipsters/:username", async(req,res,next)=>{try{const profile=await TipsterProfile.findOne({username:req.params.username,active:true}).select("userId username bio country expertise profilePhoto totalTips wins losses profit roi currentStreak longestStreak");if(!profile)return res.status(404).json({message:"Tipster not found"});const predictions=await Prediction.find({tipsterId:profile.userId,status:{ $in:["published","won","lost","void"]}}).populate({path:'matchId',populate:[{path:'homeTeamId',select:'name shortName logo'},{path:'awayTeamId',select:'name shortName logo'},{path:'leagueId',select:'name logo'}]}).sort({publishedAt:-1,createdAt:-1}).limit(100);res.json({data:{profile,predictions}});}catch(e){next(e)}});
-publicRouter.get("/predictions", async(req,res,next)=>{try{
+publicRouter.get("/predictions", optionalAuth, async(req:AuthRequest,res,next)=>{try{
   const page=Math.max(Number(req.query.page)||1,1),limit=Math.min(Math.max(Number(req.query.limit)||30,1),50);
   const search=typeof req.query.search==='string'?req.query.search.trim():'';
+  const horizon=typeof req.query.horizon==='string' && ['daily','weekly'].includes(req.query.horizon)?req.query.horizon:undefined;
   const filter:any={status:{ $in:["published","won","lost","void"]}};
+  if(horizon)filter.horizon=horizon;
   if(search)filter.$or=[{fixture:{$regex:search,$options:'i'}},{league:{$regex:search,$options:'i'}},{prediction:{$regex:search,$options:'i'}}];
+  const premium=Boolean(req.user && await Subscription.exists({userId:req.user.id,plan:'premium',status:{$in:['active','trialing']}}));
   const query=Prediction.find(filter)
-    .select('tipsterId matchId fixture league prediction odds isPremium confidence analysis status profit publishedAt resultAt createdAt')
+    .select('tipsterId matchId fixture league prediction odds isPremium confidence analysis status profit publishedAt resultAt createdAt systemGenerated source modelVersion modelScore expectedValue modelAgreement horizon oddsSource')
     .populate('tipsterId','name')
     .populate({path:'matchId',select:'kickoff status homeScore awayScore homeTeamId awayTeamId leagueId',populate:[
       {path:'homeTeamId',select:'name shortName logo'},
@@ -176,11 +181,12 @@ publicRouter.get("/predictions", async(req,res,next)=>{try{
       {path:'leagueId',select:'name logo'}
     ]})
     .sort({publishedAt:-1,createdAt:-1}).skip((page-1)*limit).limit(limit).lean();
-  const [data,total]=await Promise.all([query,Prediction.countDocuments(filter)]);
-  res.json({data,pagination:{page,limit,total,pages:Math.ceil(total/limit)}});
+  const [rows,total]=await Promise.all([query,Prediction.countDocuments(filter)]);
+  const data=rows.map((p:any)=>p.isPremium && !premium ? {...p,prediction:undefined,odds:undefined,confidence:undefined,analysis:undefined,modelScore:undefined,expectedValue:undefined,locked:true,lockReason:'Premium subscription required'} : {...p,locked:false});
+  res.json({data,premium,pagination:{page,limit,total,pages:Math.ceil(total/limit)}});
 }catch(e){next(e)}});
-publicRouter.get("/predictions/:id",async(req,res,next)=>{try{
-  const item=await Prediction.findOne({_id:req.params.id,status:{ $in:["published","won","lost","void"]}})
+publicRouter.get("/predictions/:id", optionalAuth, async(req:AuthRequest,res,next)=>{try{
+  const item:any=await Prediction.findOne({_id:req.params.id,status:{ $in:["published","won","lost","void"]}})
     .populate('tipsterId','name')
     .populate({path:'matchId',populate:[
       {path:'homeTeamId',select:'name shortName logo externalId'},
@@ -189,7 +195,10 @@ publicRouter.get("/predictions/:id",async(req,res,next)=>{try{
       {path:'seasonId',select:'name externalId'}
     ]});
   if(!item)return res.status(404).json({message:'Prediction not found'});
-  res.json({data:item});
+  const premium=Boolean(req.user && await Subscription.exists({userId:req.user.id,plan:'premium',status:{$in:['active','trialing']}}));
+  const data=item.toObject();
+  if(data.isPremium && !premium){ delete data.prediction; delete data.odds; delete data.confidence; delete data.analysis; delete data.modelScore; delete data.expectedValue; data.locked=true; data.lockReason='Premium subscription required'; }
+  res.json({data,premium});
 }catch(e){next(e)}});
 publicRouter.get("/prediction-trends", async (req,res,next)=>{
   try {
@@ -240,6 +249,6 @@ publicRouter.get("/prediction-trends", async (req,res,next)=>{
   } catch(e){next(e)}
 });
 
-publicRouter.get("/prediction-history",async(req,res,next)=>{try{const limit=Math.min(Math.max(Number(req.query.limit)||50,1),200);const filter:any={status:{ $in:["won","lost","void"]}};const [data,stats]=await Promise.all([Prediction.find(filter).populate('tipsterId','name').populate({path:'matchId',populate:[{path:'homeTeamId',select:'name shortName logo'},{path:'awayTeamId',select:'name shortName logo'},{path:'leagueId',select:'name logo'}]}).sort({resultAt:-1,createdAt:-1}).limit(limit),Prediction.aggregate([{$match:filter},{$group:{_id:null,total:{$sum:1},wins:{$sum:{$cond:[{$eq:['$status','won']},1,0]}},profit:{$sum:{$ifNull:['$profit',0]}}}},{$project:{_id:0,total:1,wins:1,profit:1,winRate:{$cond:[{$gt:['$total',0]},{$multiply:[{$divide:['$wins','$total']},100]},0]}}}])]);res.json({data,stats:stats[0]||{total:0,wins:0,profit:0,winRate:0}});}catch(e){next(e)}});
+publicRouter.get("/prediction-history",optionalAuth,async(req:AuthRequest,res,next)=>{try{const limit=Math.min(Math.max(Number(req.query.limit)||50,1),200);const filter:any={status:{ $in:["won","lost","void"]}};const premium=Boolean(req.user && await Subscription.exists({userId:req.user.id,plan:'premium',status:{$in:['active','trialing']}}));const [rows,stats]=await Promise.all([Prediction.find(filter).populate('tipsterId','name').populate({path:'matchId',populate:[{path:'homeTeamId',select:'name shortName logo'},{path:'awayTeamId',select:'name shortName logo'},{path:'leagueId',select:'name logo'}]}).sort({resultAt:-1,createdAt:-1}).limit(limit),Prediction.aggregate([{$match:filter},{$group:{_id:null,total:{$sum:1},wins:{$sum:{$cond:[{$eq:['$status','won']},1,0]}},profit:{$sum:{$ifNull:['$profit',0]}}}},{$project:{_id:0,total:1,wins:1,profit:1,winRate:{$cond:[{$gt:['$total',0]},{$multiply:[{$divide:['$wins','$total']},100]},0]}}}])]);const data=rows.map((p:any)=>p.isPremium&&!premium?{...p.toObject?.()||p,prediction:undefined,odds:undefined,confidence:undefined,analysis:undefined,locked:true,lockReason:'Premium subscription required'}:{...p.toObject?.()||p,locked:false});res.json({data,stats:stats[0]||{total:0,wins:0,profit:0,winRate:0},premium});}catch(e){next(e)}});
 publicRouter.get("/bet-of-day/recent",async(req,res,next)=>{try{const limit=Math.min(Math.max(Number(req.query.limit)||50,1),100);const data=await BetOfDay.find({status:{ $in:["won","lost","void"]}}).populate({path:'matchId',select:'kickoff status homeScore awayScore homeTeamId awayTeamId leagueId',populate:[{path:'homeTeamId',select:'name shortName logo'},{path:'awayTeamId',select:'name shortName logo'},{path:'leagueId',select:'name logo'}]}).sort({date:-1,createdAt:-1}).limit(limit);res.json({data});}catch(e){next(e)}});
 publicRouter.get("/bet-of-day",async(req,res,next)=>{try{const date=typeof req.query.date==='string'?req.query.date:new Date().toISOString().slice(0,10);const data=await BetOfDay.find({date,status:{ $in:["published","won","lost","void"]}}).populate({path:'matchId',populate:[{path:'homeTeamId',select:'name logo'},{path:'awayTeamId',select:'name logo'},{path:'leagueId',select:'name logo'}]}).sort({createdAt:1});res.json({data});}catch(e){next(e)}});

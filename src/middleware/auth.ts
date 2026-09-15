@@ -15,6 +15,17 @@ export function requireAuth(req: AuthRequest, res: Response, next: NextFunction)
     next();
   } catch { return res.status(401).json({ message: "Invalid or expired token" }); }
 }
+
+export function optionalAuth(req: AuthRequest, _res: Response, next: NextFunction) {
+  const header = req.headers.authorization;
+  if (!header?.startsWith("Bearer ")) return next();
+  try {
+    const payload = jwt.verify(header.slice(7), env.JWT_ACCESS_SECRET) as { sub: string; role: UserRole; type?: string };
+    if (payload.type === "access") req.user = { id: payload.sub, role: payload.role };
+  } catch {}
+  next();
+}
+
 export function requireRole(...roles: UserRole[]) {
   return async (req: AuthRequest, res: Response, next: NextFunction) => {
     if (!req.user || !roles.includes(req.user.role)) return res.status(403).json({ message: "Forbidden" });
