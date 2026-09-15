@@ -7,6 +7,7 @@ import { Team } from "../models/Team";
 import { Match } from "../models/Match";
 import { OddsSnapshot } from "../models/OddsSnapshot";
 import { fetchFixtures, fetchLiveFootball, fetchFixture, fetchFixtureOdds, fetchHeadToHead, fetchStandingsBySeason, fetchTeamRecentFixtures, flattenOdds, syncFixtures } from "../services/providerService";
+import { generateMatchPredictions } from "../services/predictionEngine";
 export const publicRouter = Router();
 async function attachLatestOdds(data:any[]){
   const ids=data.map((m:any)=>m._id); if(!ids.length)return data;
@@ -55,6 +56,26 @@ publicRouter.get("/matches/live", async (_req,res,next)=>{
     // Livescore fallback makes the public Live tab work even if the background scheduler restarted.
     try { const payload=await fetchLiveFootball(); const fixtures=Array.isArray(payload?.data)?payload.data:[]; if(fixtures.length){ await syncFixtures(fixtures); data=await Match.find({status:"live"}).populate("leagueId","name logo").populate("homeTeamId","name shortName logo").populate("awayTeamId","name shortName logo").sort({kickoff:1}); } } catch(e){ if(!data.length) throw e; console.error('Live fallback failed',e); }
     res.json({data:await attachLatestOdds(data)});
+  } catch(e){next(e)}
+});
+publicRouter.get("/matches/:id/prediction", optionalAuth, async (req:AuthRequest,res,next)=>{
+  try {
+    const match:any=await Match.findById(req.params.id).populate('homeTeamId','name shortName logo').populate('awayTeamId','name shortName logo').populate('leagueId','name logo');
+    if(!match) return res.status(404).json({message:'Match not found'});
+
+    let rows:any[]=await Prediction.find({matchId:match._id,systemGenerated:true,source:'ensemble',status:'published',horizon:'daily'}).sort({isPremium:1,modelScore:-1}).lean();
+    if(!rows.length && match.status==='scheduled') {
+      await generateMatchPredictions(String(match._id),'daily');
+      rows=await Prediction.find({matchId:match._id,systemGenerated:true,source:'ensemble',status:'published',horizon:'daily'}).sort({isPremium:1,modelScore:-1}).lean();
+    }
+
+    const premium=Boolean(req.user && await Subscription.exists({userId:req.user.id,plan:'premium',status:{$in:['active','trialing']}}));
+    const data=rows.map((p:any)=>{
+      const locked=Boolean(p.isPremium && !premium);
+      if(!locked) return {...p,locked:false};
+      return {...p,locked:true,prediction:null,odds:null,confidence:null,analysis:null,modelScore:null,expectedValue:null,modelAgreement:null};
+    });
+    res.json({data,hasPrediction:data.length>0});
   } catch(e){next(e)}
 });
 publicRouter.get("/matches/:id/research", async (req,res,next)=>{

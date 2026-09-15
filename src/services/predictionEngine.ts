@@ -134,6 +134,53 @@ function chooseCandidates(match:any, odds:any[], mg:any, ep:any, sportRaw:any, v
   return out.sort((a,b)=>b.value-a.value || b.probability-a.probability);
 }
 
+export async function generateMatchPredictions(matchId:string, horizon:Horizon='daily'){
+  const match:any=await Match.findById(matchId)
+    .populate('homeTeamId','name shortName logo externalId')
+    .populate('awayTeamId','name shortName logo externalId')
+    .populate('leagueId','name logo')
+    .lean();
+  if(!match) return {created:[], skipped:'match-not-found'};
+  if(match.status!=='scheduled') return {created:[], skipped:'not-scheduled'};
+
+  const {stats,elo}=await buildHistoricalState(new Date(match.kickoff));
+  const historical:any[]=await Match.find({status:'finished',kickoff:{$lt:new Date(match.kickoff)}}).sort({kickoff:-1}).limit(10000).select('homeScore awayScore').lean();
+  const league=leagueAverages(historical);
+  const odds=await getOdds(match._id);
+  let raw:any=null;
+  if(match.externalId){
+    try {
+      const payload=await fetchFixtures(new Date(match.kickoff).toISOString().slice(0,10));
+      raw=(payload?.data||[]).find((x:any)=>String(x.id)===String(match.externalId))||null;
+    } catch {}
+  }
+  let valueBets:any=null;
+  if(match.externalId){ try { valueBets=await fetchFixtureValueBets(String(match.externalId)); } catch {} }
+
+  const eg=expectedGoals(match,stats,league);
+  const pm=poissonMarkets(eg.home,eg.away);
+  const ep=eloProbabilities(match,elo);
+  let candidates=chooseCandidates(match,odds,pm,ep,raw,valueBets);
+  if(!candidates.length){
+    const fallbackType=pm.home>=pm.away && pm.home>=pm.draw ? 'Home Win' : pm.away>=pm.home && pm.away>=pm.draw ? 'Away Win' : 'Double Chance 1X';
+    const fp=fallbackType==='Home Win'?pm.home:fallbackType==='Away Win'?pm.away:pm.home+pm.draw;
+    const fair=Math.max(1.01,1/fp);
+    candidates=[{match,market:fallbackType,odds:round(fair,2),probability:fp,implied:1/fair,value:0,confidence:round(50+fp*35,1),premium:false,modelAgreement:0.8,analysis:'Model-only selection. No bookmaker price was available when this prediction was generated.',modelScores:{poisson:fp,elo:fp,sportmonks:0,market:1/fair}}];
+  }
+  const bestPublic=[...candidates].sort((a,b)=>(b.probability+(b.value>0?0.1:0))-(a.probability+(a.value>0?0.1:0)))[0];
+  const selections=[bestPublic];
+  const premium=candidates.find(x=>x.premium&&x.market!==bestPublic.market);
+  if(premium) selections.push(premium);
+  const created:any[]=[];
+  for(const c of selections.slice(0,2)){
+    let existing:any=await Prediction.findOne({matchId:match._id,systemGenerated:true,source:'ensemble',prediction:c.market,status:'published',horizon});
+    if(existing){created.push(existing);continue;}
+    existing=await Prediction.create({oddsSource:odds.length?'bookmaker':'model-fair',matchId:match._id,fixture:`${match.homeTeamId?.name||'Home'} vs ${match.awayTeamId?.name||'Away'}`,league:match.leagueId?.name||'',prediction:c.market,odds:c.odds,isPremium:c.premium,confidence:round(c.confidence,1),analysis:c.analysis,status:'published',publishedAt:new Date(),systemGenerated:true,source:'ensemble',modelVersion:'ensemble-v1-poisson-elo-sportmonks-market',modelScore:round(c.probability*100,2),expectedValue:round(c.value,4),modelAgreement:round(c.modelAgreement,4),horizon});
+    created.push(existing);
+  }
+  return {created,skipped:null};
+}
+
 async function generateForHorizon(horizon:Horizon, start:Date, end:Date){
   const {stats,elo}=await buildHistoricalState(start);
   const historical:any[]=await Match.find({status:'finished',kickoff:{$lt:start}}).sort({kickoff:-1}).limit(10000).select('homeScore awayScore').lean();
