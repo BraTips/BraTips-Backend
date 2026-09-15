@@ -26,7 +26,7 @@ const schema = new Schema<IRewardPeriod>({
   label: { type: String, required: true },
   startDate: { type: Date, required: true },
   endDate: { type: Date, required: true },
-  currency: { type: String, default: 'GHS', uppercase: true },
+  currency: { type: String, default: 'USD', uppercase: true },
   grossRevenue: { type: Number, default: 0, min: 0 },
   platformSharePercent: { type: Number, default: 70, min: 0, max: 100 },
   tipsterPoolPercent: { type: Number, default: 30, min: 0, max: 100 },

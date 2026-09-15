@@ -48,7 +48,7 @@ const schema = new Schema<ITipsterReward>({
   performanceScore: { type: Number, default: 0 },
   sharePercent: { type: Number, default: 0 },
   amount: { type: Number, default: 0, min: 0 },
-  currency: { type: String, default: 'GHS', uppercase: true },
+  currency: { type: String, default: 'USD', uppercase: true },
   status: { type: String, enum: ['pending', 'approved', 'paid', 'cancelled'], default: 'pending', index: true },
   approvedAt: Date,
   paidAt: Date

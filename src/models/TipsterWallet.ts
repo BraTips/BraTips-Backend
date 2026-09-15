@@ -17,7 +17,7 @@ const schema = new Schema<ITipsterWallet>({
   pendingBalance: { type: Number, default: 0, min: 0 },
   lifetimeEarned: { type: Number, default: 0, min: 0 },
   lifetimeWithdrawn: { type: Number, default: 0, min: 0 },
-  currency: { type: String, default: 'GHS', uppercase: true }
+  currency: { type: String, default: 'USD', uppercase: true }
 }, { timestamps: true });
 
 export const TipsterWallet = model<ITipsterWallet>('TipsterWallet', schema);

@@ -23,7 +23,7 @@ const schema = new Schema<IWalletTransaction>({
   walletId: { type: Schema.Types.ObjectId, ref: 'TipsterWallet', required: true, index: true },
   type: { type: String, enum: ['PERFORMANCE_REWARD', 'BONUS', 'WITHDRAWAL', 'WITHDRAWAL_REVERSAL', 'ADJUSTMENT'], required: true, index: true },
   amount: { type: Number, required: true },
-  currency: { type: String, default: 'GHS', uppercase: true },
+  currency: { type: String, default: 'USD', uppercase: true },
   status: { type: String, enum: ['pending', 'available', 'completed', 'cancelled'], default: 'pending', index: true },
   reference: { type: String, required: true, unique: true, index: true },
   description: String,

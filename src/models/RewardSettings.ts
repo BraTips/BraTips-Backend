@@ -19,7 +19,7 @@ const schema = new Schema<IRewardSettings>({
   minSettledPredictions: { type: Number, default: 50, min: 1 },
   minMonthlySettledPredictions: { type: Number, default: 5, min: 1 },
   minWithdrawal: { type: Number, default: 10, min: 1 },
-  currency: { type: String, default: 'GHS', uppercase: true }
+  currency: { type: String, default: 'USD', uppercase: true }
 }, { timestamps: true });
 
 export const RewardSettings = model<IRewardSettings>('RewardSettings', schema);

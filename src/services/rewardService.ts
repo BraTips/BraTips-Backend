@@ -18,7 +18,8 @@ export const MIN_SETTLED_PREDICTIONS = 50;
 export const MIN_WITHDRAWAL = 10;
 
 export async function getRewardSettings(){
-  return RewardSettings.findOneAndUpdate({singletonKey:'default'},{$setOnInsert:{singletonKey:'default',platformSharePercent:PLATFORM_SHARE_PERCENT,tipsterPoolPercent:TIPSTER_POOL_PERCENT,minSettledPredictions:MIN_SETTLED_PREDICTIONS,minMonthlySettledPredictions:5,minWithdrawal:MIN_WITHDRAWAL,currency:String(env.TIPSTER_REWARD_CURRENCY||env.STRIPE_CURRENCY||'GHS').toUpperCase()}},{upsert:true,new:true,setDefaultsOnInsert:true});
+  const currency=String(env.TIPSTER_REWARD_CURRENCY||env.STRIPE_CURRENCY||'USD').toUpperCase();
+  return RewardSettings.findOneAndUpdate({singletonKey:'default'},{$set:{currency},$setOnInsert:{singletonKey:'default',platformSharePercent:PLATFORM_SHARE_PERCENT,tipsterPoolPercent:TIPSTER_POOL_PERCENT,minSettledPredictions:MIN_SETTLED_PREDICTIONS,minMonthlySettledPredictions:5,minWithdrawal:MIN_WITHDRAWAL}},{upsert:true,new:true,setDefaultsOnInsert:true});
 }
 
 function round2(value:number){ return Math.round(value * 100) / 100; }
@@ -39,7 +40,7 @@ export async function recordSubscriptionRevenue(input:{invoiceId:string;customer
   const userId=subscription?.userId;
   return SubscriptionRevenue.findOneAndUpdate(
     {invoiceId:input.invoiceId},
-    {$setOnInsert:{invoiceId:input.invoiceId,subscriptionId:subscription?._id,userId,stripeCustomerId:input.customerId,stripeSubscriptionId:input.subscriptionId,amount:round2(input.amount),refundedAmount:0,currency:String(input.currency||env.TIPSTER_REWARD_CURRENCY||'GHS').toUpperCase(),status:'paid',paidAt:input.paidAt||new Date(),periodStart:input.periodStart,periodEnd:input.periodEnd}},
+    {$setOnInsert:{invoiceId:input.invoiceId,subscriptionId:subscription?._id,userId,stripeCustomerId:input.customerId,stripeSubscriptionId:input.subscriptionId,amount:round2(input.amount),refundedAmount:0,currency:String(input.currency||env.TIPSTER_REWARD_CURRENCY||'USD').toUpperCase(),status:'paid',paidAt:input.paidAt||new Date(),periodStart:input.periodStart,periodEnd:input.periodEnd}},
     {upsert:true,new:true,setDefaultsOnInsert:true}
   );
 }
@@ -76,8 +77,8 @@ export async function calculateRewardPeriod(key:string, options?:{poolPercent?:n
     {$group:{_id:'$currency',amount:{$sum:'$amount'}}}
   ]);
   if(revenueByCurrency.length>1) throw new Error('Reward calculation requires a single subscription currency for the period.');
-  const currency=String(revenueByCurrency[0]?._id||settings.currency||env.TIPSTER_REWARD_CURRENCY||'GHS').toUpperCase();
-  const configuredCurrency=String(settings.currency||env.TIPSTER_REWARD_CURRENCY||env.STRIPE_CURRENCY||'GHS').toUpperCase();
+  const currency=String(revenueByCurrency[0]?._id||settings.currency||env.TIPSTER_REWARD_CURRENCY||'USD').toUpperCase();
+  const configuredCurrency=String(settings.currency||env.TIPSTER_REWARD_CURRENCY||env.STRIPE_CURRENCY||'USD').toUpperCase();
   if(revenueByCurrency.length && currency!==configuredCurrency) throw new Error(`Subscription currency ${currency} does not match tipster reward currency ${configuredCurrency}. Set Stripe Prices and TIPSTER_REWARD_CURRENCY to the same settlement currency.`);
   const grossRevenue=round2(revenueByCurrency.filter(x=>String(x._id).toUpperCase()===currency).reduce((s,x)=>s+Number(x.amount||0),0));
   const period=await RewardPeriod.findOneAndUpdate({key},{$setOnInsert:{key,label,startDate:start,endDate:end,currency,platformSharePercent:platformPercent,tipsterPoolPercent:poolPercent}}, {upsert:true,new:true,setDefaultsOnInsert:true});
@@ -221,7 +222,7 @@ export async function settleWithdrawal(id:string,status:'approved'|'paid'|'rejec
 export async function getTipsterWallet(userId:string){
   const profile=await TipsterProfile.findOne({userId}); if(!profile) throw new Error('Tipster profile not found');
   const settings=await getRewardSettings();
-  const wallet=await TipsterWallet.findOneAndUpdate({tipsterId:profile._id},{$setOnInsert:{tipsterId:profile._id,currency:settings.currency}},{upsert:true,new:true,setDefaultsOnInsert:true});
+  const wallet=await TipsterWallet.findOneAndUpdate({tipsterId:profile._id},{$set:{currency:settings.currency},$setOnInsert:{tipsterId:profile._id}},{upsert:true,new:true,setDefaultsOnInsert:true});
   const [transactions,withdrawals]=await Promise.all([
     WalletTransaction.find({tipsterId:profile._id}).sort({createdAt:-1}).limit(50),
     WithdrawalRequest.find({tipsterId:profile._id}).sort({createdAt:-1}).limit(30)

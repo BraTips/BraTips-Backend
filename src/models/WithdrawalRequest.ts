@@ -26,7 +26,7 @@ const schema = new Schema<IWithdrawalRequest>({
   tipsterId: { type: Schema.Types.ObjectId, ref: 'TipsterProfile', required: true, index: true },
   walletId: { type: Schema.Types.ObjectId, ref: 'TipsterWallet', required: true },
   amount: { type: Number, required: true, min: 1 },
-  currency: { type: String, default: 'GHS', uppercase: true },
+  currency: { type: String, default: 'USD', uppercase: true },
   method: { type: String, enum: ['mobile_money', 'bank_transfer'], required: true },
   payoutAccountName: { type: String, required: true, maxlength: 120 },
   payoutAccountNumber: { type: String, required: true, maxlength: 40 },
