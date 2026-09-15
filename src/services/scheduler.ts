@@ -140,6 +140,44 @@ export async function startCustomSync(startDate:string,endDate:string){
   return job;
 }
 
+
+/** Manually generate prediction records without waiting for kickoff or a scheduler run.
+ * The selected range is processed immediately in the background; fixtures must already
+ * exist in Match (use a sync first if needed). Daily predictions are generated for every
+ * selected date and weekly predictions are generated for each Monday touched by the range.
+ */
+async function executePredictionGeneration(job:any,startDate:string,endDate:string){
+  let daily:any[]=[]; let weekly:any[]=[];
+  try{
+    const start=new Date(`${startDate}T00:00:00.000Z`);
+    const end=new Date(`${endDate}T00:00:00.000Z`);
+    for(let d=new Date(start); d<=end; d.setUTCDate(d.getUTCDate()+1)){
+      const date=isoDate(d);
+      daily.push(await generateDailyPredictions(date));
+      if(d.getUTCDay()===1) weekly.push(await generateWeeklyPredictions(date));
+    }
+    if(!weekly.length) weekly.push(await generateWeeklyPredictions(startDate));
+    const created=daily.reduce((n,x)=>n+Number(x?.created||0),0)+weekly.reduce((n,x)=>n+Number(x?.created||0),0);
+    job.status='success'; job.fetched=created; job.upserted=created; job.finishedAt=new Date(); await job.save();
+    return {job,daily,weekly,created};
+  }catch(e:any){
+    job.status='failed'; job.error=e?.message||String(e); job.finishedAt=new Date(); await job.save();
+    throw e;
+  }
+}
+
+export async function startPredictionGeneration(startDate:string,endDate:string){
+  const start=new Date(`${startDate}T00:00:00.000Z`);
+  const end=new Date(`${endDate}T00:00:00.000Z`);
+  if(Number.isNaN(start.getTime())||Number.isNaN(end.getTime())) throw new Error('Invalid prediction generation date range');
+  if(end<start) throw new Error('End date must be on or after start date');
+  const days=Math.floor((end.getTime()-start.getTime())/86400000)+1;
+  if(days>31) throw new Error('Prediction generation range cannot exceed 31 days');
+  const job=await SyncJob.create({type:'manual',status:'running',startedAt:new Date(),date:startDate});
+  void executePredictionGeneration(job,startDate,endDate).catch(e=>console.error('Manual prediction generation failed',e));
+  return job;
+}
+
 async function catchUpCurrentWeek(){
   try{
     const monday=isoDate(mondayFor(new Date()));

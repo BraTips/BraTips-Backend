@@ -12,7 +12,7 @@ import { requireAuth, requireRole, type AuthRequest } from "../middleware/auth";
 import { Subscription } from '../models/Subscription';
 import { OddsSnapshot } from '../models/OddsSnapshot';
 import { verifyEmailConfiguration } from '../services/emailService';
-import { runWeeklySync, runSync, runCustomSync, startCustomSync } from '../services/scheduler';
+import { runWeeklySync, runSync, runCustomSync, startCustomSync, startPredictionGeneration } from '../services/scheduler';
 
 export const adminRouter = Router();
 adminRouter.use(requireAuth, requireRole("admin"));
@@ -113,6 +113,7 @@ adminRouter.get('/prediction-history',async(req,res,next)=>{try{const page=Math.
 adminRouter.get('/bet-of-day',async(req,res,next)=>{try{const date=typeof req.query.date==='string'?req.query.date:new Date().toISOString().slice(0,10);const data=await BetOfDay.find({date}).populate({path:'matchId',populate:[{path:'homeTeamId',select:'name shortName logo'},{path:'awayTeamId',select:'name shortName logo'},{path:'leagueId',select:'name logo'}]}).sort({createdAt:1});res.json({data});}catch(e){next(e)}});
 adminRouter.post('/bet-of-day/generate',async(req,res,next)=>{try{const date=typeof req.body?.date==='string'?req.body.date:new Date().toISOString().slice(0,10);res.json({data:await generateBetOfDay(date)});}catch(e){next(e)}});
 adminRouter.post('/prediction-engine/generate',async(req,res,next)=>{try{const date=typeof req.body?.date==='string'?req.body.date:new Date().toISOString().slice(0,10);const daily=await generateDailyPredictions(date);const weekly=await generateWeeklyPredictions(date);res.json({data:{daily,weekly}});}catch(e){next(e)}});
+adminRouter.post('/prediction-engine/generate-range',async(req,res,next)=>{try{const startDate=typeof req.body?.startDate==='string'?req.body.startDate:'';const endDate=typeof req.body?.endDate==='string'?req.body.endDate:startDate;if(!startDate)return res.status(400).json({message:'startDate is required'});const job=await startPredictionGeneration(startDate,endDate);res.status(202).json({data:{job,accepted:true,message:'Prediction generation started. No kickoff wait is required.'}});}catch(e){next(e)}});
 const betStatus=z.object({status:z.enum(['draft','approved','published','won','lost','void']),prediction:z.string().min(1).optional(),confidence:z.coerce.number().min(0).max(100).optional(),risk:z.string().max(50).optional(),analysis:z.string().max(3000).optional()});
 adminRouter.patch('/bet-of-day/:id',async(req,res,next)=>{try{const item=await BetOfDay.findByIdAndUpdate(req.params.id,betStatus.parse(req.body),{new:true});if(!item)return res.status(404).json({message:'Bet of the Day not found'});res.json({data:item});}catch(e){next(e)}});
 

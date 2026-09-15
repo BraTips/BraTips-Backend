@@ -9,12 +9,22 @@ import { OddsSnapshot } from "../models/OddsSnapshot";
 import { fetchFixtures, fetchLiveFootball, fetchFixture, fetchFixtureOdds, fetchHeadToHead, fetchStandingsBySeason, fetchTeamRecentFixtures, flattenOdds, syncFixtures } from "../services/providerService";
 import { generateMatchPredictions } from "../services/predictionEngine";
 export const publicRouter = Router();
-async function attachLatestOdds(data:any[]){
+async function attachLatestOdds(data:any[], mode:'pre-match'|'inplay'='pre-match'){
   const ids=data.map((m:any)=>m._id); if(!ids.length)return data;
-  const snapshots=await OddsSnapshot.find({matchId:{$in:ids},mode:'pre-match'}).sort({recordedAt:-1}).limit(2000);
+  const snapshots=await OddsSnapshot.find({matchId:{$in:ids},mode}).sort({recordedAt:-1}).limit(3000);
   const seen=new Set<string>(); const by=new Map<string,any[]>();
   for(const o of snapshots){const k=String(o.matchId)+'|'+String(o.marketId)+'|'+o.label;if(seen.has(k))continue;seen.add(k);const id=String(o.matchId);if(!by.has(id))by.set(id,[]);by.get(id)!.push(o);}
-  return data.map((m:any)=>({...m.toObject(),odds:(by.get(String(m._id))||[]).slice(0,12)}));
+  return data.map((m:any)=>({...m.toObject(),odds:(by.get(String(m._id))||[]).slice(0,12),oddsMode:mode,oddsLabel:'BraTipsters Odds'}));
+}
+
+function bestPublicOdds(rows:any[]){
+  const best=new Map<string,any>();
+  for(const row of Array.isArray(rows)?rows:[]){
+    const key=`${row.marketId||row.marketName||''}|${row.label||row.name||''}`;
+    const current=best.get(key);
+    if(!current || Number(row.value||0)>Number(current.value||0)) best.set(key,row);
+  }
+  return [...best.values()].sort((a,b)=>Number(b.value||0)-Number(a.value||0)).slice(0,12);
 }
 
 
@@ -55,7 +65,20 @@ publicRouter.get("/matches/live", async (_req,res,next)=>{
     let data=await Match.find({status:"live"}).populate("leagueId","name logo").populate("homeTeamId","name shortName logo").populate("awayTeamId","name shortName logo").sort({kickoff:1});
     // Livescore fallback makes the public Live tab work even if the background scheduler restarted.
     try { const payload=await fetchLiveFootball(); const fixtures=Array.isArray(payload?.data)?payload.data:[]; if(fixtures.length){ await syncFixtures(fixtures); data=await Match.find({status:"live"}).populate("leagueId","name logo").populate("homeTeamId","name shortName logo").populate("awayTeamId","name shortName logo").sort({kickoff:1}); } } catch(e){ if(!data.length) throw e; console.error('Live fallback failed',e); }
-    res.json({data:await attachLatestOdds(data)});
+    // In-play prices are the live Sportmonks bookmaker feed. Expose them as BraTipsters Odds
+    // on the public site and prefer the freshest saved snapshot, falling back to Sportmonks.
+    let enriched=await attachLatestOdds(data,'inplay');
+    enriched=enriched.map((m:any)=>({...m,odds:bestPublicOdds(m.odds||[])}));
+    for(const m of enriched){
+      if(!m.odds?.length && m.externalId){
+        try {
+          const live=flattenOdds(await fetchFixtureOdds(String(m.externalId),'inplay'));
+          m.odds=bestPublicOdds(live.map((o:any)=>({...o,mode:'inplay'})));
+          m.oddsMode='inplay'; m.oddsLabel='BraTipsters Odds';
+        } catch {}
+      }
+    }
+    res.json({data:enriched});
   } catch(e){next(e)}
 });
 publicRouter.get("/matches/:id/prediction", optionalAuth, async (req:AuthRequest,res,next)=>{
