@@ -193,8 +193,8 @@ publicRouter.get("/predictions/:id",async(req,res,next)=>{try{
 }catch(e){next(e)}});
 publicRouter.get("/prediction-trends", async (req,res,next)=>{
   try {
-    const rawDays=Number(req.query.days||30);
-    const days=Number.isFinite(rawDays)?Math.min(Math.max(Math.floor(rawDays),7),365):30;
+    const rawDays=Number(req.query.days||365);
+    const days=Number.isFinite(rawDays)?Math.min(Math.max(Math.floor(rawDays),7),365):365;
     const end=new Date(); end.setUTCHours(23,59,59,999);
     const start=new Date(end); start.setUTCDate(start.getUTCDate()-(days-1)); start.setUTCHours(0,0,0,0);
     const match={status:{$in:['won','lost'] as string[]},resultAt:{$gte:start,$lte:end}};
