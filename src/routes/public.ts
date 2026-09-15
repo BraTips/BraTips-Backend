@@ -215,6 +215,11 @@ publicRouter.get("/predictions", optionalAuth, async(req:AuthRequest,res,next)=>
   const horizon=typeof req.query.horizon==='string' && ['daily','weekly'].includes(req.query.horizon)?req.query.horizon:undefined;
   const filter:any={status:{ $in:["published","won","lost","void"]}};
   if(horizon)filter.horizon=horizon;
+  if(String(req.query.tipster||'')==='true') filter.tipsterId={$exists:true,$ne:null};
+  if(String(req.query.upcoming||'')==='true'){
+    const upcomingMatches=await Match.find({status:'scheduled',kickoff:{$gt:new Date()}}).select('_id').lean();
+    filter.matchId={$in:upcomingMatches.map((m:any)=>m._id)};
+  }
   if(market){
     const marketMap:any={
       'home-win':'Home Win','away-win':'Away Win','draw':'Draw',
