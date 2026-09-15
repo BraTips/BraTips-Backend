@@ -1,4 +1,4 @@
-import { fetchLiveFootball, fetchFixtures, syncFixtures, syncUpcomingOdds } from './providerService';
+import { fetchLiveFootball, fetchFixtures, fetchFixturesBetween, syncFixtures, syncUpcomingOdds } from './providerService';
 import { SyncJob } from '../models/SyncJob';
 import { generateBetOfDay } from './aiBetService';
 import { generateDailyPredictions, generateWeeklyPredictions } from './predictionEngine';
@@ -70,6 +70,8 @@ export async function runWeeklySync(startDate?: string){
   if(Number.isNaN(requested.getTime())) throw new Error('Invalid weekly sync date');
   const monday = mondayFor(requested);
   const weekStart = isoDate(monday);
+  const weekEndDate = new Date(monday); weekEndDate.setUTCDate(weekEndDate.getUTCDate()+6);
+  const weekEnd = isoDate(weekEndDate);
 
   const existing = await SyncJob.findOne({type:'weekly',date:weekStart,status:'running'}).sort({startedAt:-1});
   if(existing) return existing;
@@ -77,28 +79,42 @@ export async function runWeeklySync(startDate?: string){
   const job=await SyncJob.create({type:'weekly',status:'running',startedAt:new Date(),date:weekStart});
   let fetched=0, upserted=0;
   try{
-    for(let i=0;i<7;i++){
-      const date=shiftDate(i,monday);
-      const p:any=await fetchFixtures(date);
-      const fixtures=Array.isArray(p?.data)?p.data:[];
-      fetched += fixtures.length;
-      upserted += await syncFixtures(fixtures);
-    }
-
-    // Refresh odds once after the week's fixtures are present, then build the full week.
+    const p:any=await fetchFixturesBetween(weekStart,weekEnd);
+    const fixtures=Array.isArray(p?.data)?p.data:[];
+    fetched=fixtures.length;
+    upserted=await syncFixtures(fixtures);
+    if(fetched===0) throw new Error(`Sportmonks returned 0 fixtures for ${weekStart} to ${weekEnd}. Check that FOOTBALL_API_KEY is valid and that your Sportmonks subscription includes the leagues and dates requested.`);
     await syncUpcomingOdds();
     const weekly=await generateWeeklyPredictions(weekStart);
-    // Monday's daily feed should also be ready immediately after the weekly run.
     const daily=await generateDailyPredictions(weekStart);
     await generateBetOfDay(weekStart).catch(e=>console.error('Weekly Bet of the Day generation failed',e));
-
-    job.status='success';
-    job.fetched=fetched;
-    job.upserted=upserted;
-    job.finishedAt=new Date();
-    await job.save();
+    job.status='success';job.fetched=fetched;job.upserted=upserted;job.finishedAt=new Date();await job.save();
     console.log(`Weekly sync complete for ${weekStart}: ${fetched} fixtures, ${upserted} saved, ${weekly.created ?? 0} weekly predictions, ${daily.created ?? 0} daily predictions.`);
     return job;
+  }catch(e:any){
+    job.status='failed';job.fetched=fetched;job.upserted=upserted;job.error=e?.message||String(e);job.finishedAt=new Date();await job.save();throw e;
+  }
+}
+
+export async function runCustomSync(startDate:string,endDate:string){
+  const start=new Date(`${startDate}T00:00:00.000Z`);
+  const end=new Date(`${endDate}T00:00:00.000Z`);
+  if(Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) throw new Error('Invalid custom sync date range');
+  if(end<start) throw new Error('End date must be on or after start date');
+  const days=Math.floor((end.getTime()-start.getTime())/86400000)+1;
+  if(days>31) throw new Error('Custom sync range cannot exceed 31 days');
+  const job=await SyncJob.create({type:'manual',status:'running',startedAt:new Date(),date:startDate});
+  let fetched=0, upserted=0;
+  try{
+    const p:any=await fetchFixturesBetween(startDate,endDate);
+    const fixtures=Array.isArray(p?.data)?p.data:[];
+    fetched=fixtures.length;
+    upserted=await syncFixtures(fixtures);
+    if(fetched>0) await syncUpcomingOdds();
+    const weekly=await generateWeeklyPredictions(startDate);
+    const daily=await generateDailyPredictions(startDate);
+    job.status='success';job.fetched=fetched;job.upserted=upserted;job.finishedAt=new Date();await job.save();
+    return {job,weekly,daily};
   }catch(e:any){
     job.status='failed';job.fetched=fetched;job.upserted=upserted;job.error=e?.message||String(e);job.finishedAt=new Date();await job.save();throw e;
   }

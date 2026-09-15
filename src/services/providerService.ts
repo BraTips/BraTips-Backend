@@ -45,6 +45,10 @@ export async function fetchFixtures(date: string) {
   requireToken();
   return requestJson(url(`/fixtures/date/${encodeURIComponent(date)}`, { include:'participants;scores;state;events.type;lineups.player;statistics.type;xgfixture.type;predictions.type;league;venue' }));
 }
+export async function fetchFixturesBetween(startDate: string, endDate: string) {
+  requireToken();
+  return requestJson(url(`/fixtures/between/${encodeURIComponent(startDate)}/${encodeURIComponent(endDate)}`, { include:'participants;scores;state;events.type;lineups.player;statistics.type;xgfixture.type;predictions.type;league;venue' }));
+}
 export async function fetchFixture(fixtureId: string) {
   requireToken();
   return requestJson(url(`/fixtures/${encodeURIComponent(fixtureId)}`, { include:'participants;scores;state;events.type;lineups.player;statistics.type;xgfixture.type;predictions.type;league;venue' }));
