@@ -12,7 +12,7 @@ import { requireAuth, requireRole, type AuthRequest } from "../middleware/auth";
 import { Subscription } from '../models/Subscription';
 import { OddsSnapshot } from '../models/OddsSnapshot';
 import { verifyEmailConfiguration } from '../services/emailService';
-import { runWeeklySync, runSync, runCustomSync } from '../services/scheduler';
+import { runWeeklySync, runSync, runCustomSync, startCustomSync } from '../services/scheduler';
 
 export const adminRouter = Router();
 adminRouter.use(requireAuth, requireRole("admin"));
@@ -103,7 +103,8 @@ adminRouter.get('/sync/status',async(_req,res,next)=>{try{const [latest,history]
 adminRouter.post('/sync/run',async(req,res,next)=>{try{const type=req.body?.type==='live'?'live':'daily';const date=typeof req.body?.date==='string'?req.body.date:new Date().toISOString().slice(0,10);const job=await runSync(type,date);res.json({data:job});}catch(e){next(e)}});
 adminRouter.post('/sync/run-daily',async(req,res,next)=>{try{const date=typeof req.body?.date==='string'?req.body.date:new Date().toISOString().slice(0,10);const job=await runSync('daily',date);const picks=await generateBetOfDay(date).catch(()=>[]);res.json({data:{job,picks}});}catch(e){next(e)}});
 adminRouter.post('/sync/run-weekly',async(req,res,next)=>{try{const date=typeof req.body?.date==='string'?req.body.date:undefined;const job=await runWeeklySync(date);res.json({data:{job}});}catch(e){next(e)}});
-adminRouter.post('/sync/run-range',async(req,res,next)=>{try{const startDate=typeof req.body?.startDate==='string'?req.body.startDate:'';const endDate=typeof req.body?.endDate==='string'?req.body.endDate:'';if(!startDate||!endDate)return res.status(400).json({message:'startDate and endDate are required'});const result=await runCustomSync(startDate,endDate);res.json({data:result});}catch(e){next(e)}});
+adminRouter.post('/sync/run-range',async(req,res,next)=>{try{const startDate=typeof req.body?.startDate==='string'?req.body.startDate:'';const endDate=typeof req.body?.endDate==='string'?req.body.endDate:'';if(!startDate||!endDate)return res.status(400).json({message:'startDate and endDate are required'});const job=await startCustomSync(startDate,endDate);res.status(202).json({data:{job,accepted:true,message:'Custom sync started. Poll the sync status for completion.'}});}catch(e){next(e)}});
+adminRouter.get('/sync/status/:id',async(req,res,next)=>{try{const job=await SyncJob.findById(req.params.id);if(!job)return res.status(404).json({message:'Sync job not found'});res.json({data:job});}catch(e){next(e)}});
 
 
 adminRouter.get('/billing/overview',async(req,res,next)=>{try{const days=Math.min(Math.max(Number(req.query.days)||30,7),365);const since=new Date(Date.now()-days*86400000);const [total,active,trialing,pastDue,canceled,recent,byPlan]=await Promise.all([Subscription.countDocuments(),Subscription.countDocuments({status:'active'}),Subscription.countDocuments({status:'trialing'}),Subscription.countDocuments({status:'past_due'}),Subscription.countDocuments({status:'canceled'}),Subscription.find({createdAt:{$gte:since}}).sort({createdAt:-1}).limit(100).populate('userId','name email'),Subscription.aggregate([{$match:{status:{$in:['active','trialing']}}},{$group:{_id:'$plan',count:{$sum:1}}}])]);res.json({data:{totals:{total,active,trialing,pastDue,canceled},byPlan,recent}})}catch(e){next(e)}});

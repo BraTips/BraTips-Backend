@@ -96,14 +96,7 @@ export async function runWeeklySync(startDate?: string){
   }
 }
 
-export async function runCustomSync(startDate:string,endDate:string){
-  const start=new Date(`${startDate}T00:00:00.000Z`);
-  const end=new Date(`${endDate}T00:00:00.000Z`);
-  if(Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) throw new Error('Invalid custom sync date range');
-  if(end<start) throw new Error('End date must be on or after start date');
-  const days=Math.floor((end.getTime()-start.getTime())/86400000)+1;
-  if(days>31) throw new Error('Custom sync range cannot exceed 31 days');
-  const job=await SyncJob.create({type:'manual',status:'running',startedAt:new Date(),date:startDate});
+async function executeCustomSync(job:any,startDate:string,endDate:string){
   let fetched=0, upserted=0;
   try{
     const p:any=await fetchFixturesBetween(startDate,endDate);
@@ -114,10 +107,37 @@ export async function runCustomSync(startDate:string,endDate:string){
     const weekly=await generateWeeklyPredictions(startDate);
     const daily=await generateDailyPredictions(startDate);
     job.status='success';job.fetched=fetched;job.upserted=upserted;job.finishedAt=new Date();await job.save();
+    console.log(`Custom sync complete for ${startDate} to ${endDate}: ${fetched} fixtures, ${upserted} saved.`);
     return {job,weekly,daily};
   }catch(e:any){
-    job.status='failed';job.fetched=fetched;job.upserted=upserted;job.error=e?.message||String(e);job.finishedAt=new Date();await job.save();throw e;
+    job.status='failed';job.fetched=fetched;job.upserted=upserted;job.error=e?.message||String(e);job.finishedAt=new Date();await job.save();
+    console.error(`Custom sync failed for ${startDate} to ${endDate}`,e);
+    return {job,error:job.error};
   }
+}
+
+export async function runCustomSync(startDate:string,endDate:string){
+  const start=new Date(`${startDate}T00:00:00.000Z`);
+  const end=new Date(`${endDate}T00:00:00.000Z`);
+  if(Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) throw new Error('Invalid custom sync date range');
+  if(end<start) throw new Error('End date must be on or after start date');
+  const days=Math.floor((end.getTime()-start.getTime())/86400000)+1;
+  if(days>31) throw new Error('Custom sync range cannot exceed 31 days');
+  const job=await SyncJob.create({type:'manual',status:'running',startedAt:new Date(),date:startDate});
+  return executeCustomSync(job,startDate,endDate);
+}
+
+/** Start a potentially long custom sync without holding the HTTP request open. */
+export async function startCustomSync(startDate:string,endDate:string){
+  const start=new Date(`${startDate}T00:00:00.000Z`);
+  const end=new Date(`${endDate}T00:00:00.000Z`);
+  if(Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) throw new Error('Invalid custom sync date range');
+  if(end<start) throw new Error('End date must be on or after start date');
+  const days=Math.floor((end.getTime()-start.getTime())/86400000)+1;
+  if(days>31) throw new Error('Custom sync range cannot exceed 31 days');
+  const job=await SyncJob.create({type:'manual',status:'running',startedAt:new Date(),date:startDate});
+  void executeCustomSync(job,startDate,endDate);
+  return job;
 }
 
 async function catchUpCurrentWeek(){
