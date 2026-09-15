@@ -12,6 +12,7 @@ import { requireAuth, requireRole, type AuthRequest } from "../middleware/auth";
 import { Subscription } from '../models/Subscription';
 import { OddsSnapshot } from '../models/OddsSnapshot';
 import { verifyEmailConfiguration } from '../services/emailService';
+import { runWeeklySync, runSync } from '../services/scheduler';
 
 export const adminRouter = Router();
 adminRouter.use(requireAuth, requireRole("admin"));
@@ -61,7 +62,6 @@ import { getEmailSettings, saveEmailSettings, sendTestEmail } from "../services/
 import { calculateRewardPeriod, approveReward, makeRewardAvailable, settleWithdrawal, settlePredictionRewards, getRewardSettings, getTipsterWalletIntegrity } from '../services/rewardService';
 import { generateBetOfDay } from '../services/aiBetService';
 import { generateDailyPredictions, generateWeeklyPredictions } from '../services/predictionEngine';
-import { runSync } from '../services/scheduler';
 
 const rewardAllocationBody=z.object({poolPercent:z.coerce.number().min(0).max(100),platformPercent:z.coerce.number().min(0).max(100)}).refine(x=>x.platformPercent+x.poolPercent===100,{message:'Shares must total 100%'});
 
@@ -102,6 +102,7 @@ adminRouter.patch('/withdrawals/:id',async(req,res,next)=>{try{const b=withdrawa
 adminRouter.get('/sync/status',async(_req,res,next)=>{try{const [latest,history]=await Promise.all([SyncJob.findOne().sort({startedAt:-1}),SyncJob.find().sort({startedAt:-1}).limit(30)]);res.json({data:{latest,history}});}catch(e){next(e)}});
 adminRouter.post('/sync/run',async(req,res,next)=>{try{const type=req.body?.type==='live'?'live':'daily';const date=typeof req.body?.date==='string'?req.body.date:new Date().toISOString().slice(0,10);const job=await runSync(type,date);res.json({data:job});}catch(e){next(e)}});
 adminRouter.post('/sync/run-daily',async(req,res,next)=>{try{const date=typeof req.body?.date==='string'?req.body.date:new Date().toISOString().slice(0,10);const job=await runSync('daily',date);const picks=await generateBetOfDay(date).catch(()=>[]);res.json({data:{job,picks}});}catch(e){next(e)}});
+adminRouter.post('/sync/run-weekly',async(req,res,next)=>{try{const date=typeof req.body?.date==='string'?req.body.date:undefined;const job=await runWeeklySync(date);res.json({data:{job}});}catch(e){next(e)}});
 
 
 adminRouter.get('/billing/overview',async(req,res,next)=>{try{const days=Math.min(Math.max(Number(req.query.days)||30,7),365);const since=new Date(Date.now()-days*86400000);const [total,active,trialing,pastDue,canceled,recent,byPlan]=await Promise.all([Subscription.countDocuments(),Subscription.countDocuments({status:'active'}),Subscription.countDocuments({status:'trialing'}),Subscription.countDocuments({status:'past_due'}),Subscription.countDocuments({status:'canceled'}),Subscription.find({createdAt:{$gte:since}}).sort({createdAt:-1}).limit(100).populate('userId','name email'),Subscription.aggregate([{$match:{status:{$in:['active','trialing']}}},{$group:{_id:'$plan',count:{$sum:1}}}])]);res.json({data:{totals:{total,active,trialing,pastDue,canceled},byPlan,recent}})}catch(e){next(e)}});
