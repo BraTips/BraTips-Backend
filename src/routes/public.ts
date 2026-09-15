@@ -162,15 +162,6 @@ publicRouter.get("/tipsters/rankings", async(req,res,next)=>{try{
   data.sort((a:any,b:any)=>b.profit-a.profit||b.roi-a.roi||b.winRate-a.winRate); res.json({data,month:`${year}-${String(month).padStart(2,'0')}`});
 }catch(e){next(e)}});
 publicRouter.get("/tipsters/:username", async(req,res,next)=>{try{const profile=await TipsterProfile.findOne({username:req.params.username,active:true}).select("userId username bio country expertise profilePhoto totalTips wins losses profit roi currentStreak longestStreak");if(!profile)return res.status(404).json({message:"Tipster not found"});const predictions=await Prediction.find({tipsterId:profile.userId,status:{ $in:["published","won","lost","void"]}}).populate({path:'matchId',populate:[{path:'homeTeamId',select:'name shortName logo'},{path:'awayTeamId',select:'name shortName logo'},{path:'leagueId',select:'name logo'}]}).sort({publishedAt:-1,createdAt:-1}).limit(100);res.json({data:{profile,predictions}});}catch(e){next(e)}});
-publicRouter.get("/prediction-trends", async(_req,res,next)=>{try{
-  const data=await Prediction.aggregate([
-    {$match:{status:{$in:['won','lost']}}},
-    {$group:{_id:'$prediction',tips:{$sum:1},wins:{$sum:{$cond:[{$eq:['$status','won']},1,0]}},profit:{$sum:{$ifNull:['$profit',0]}},avgOdds:{$avg:'$odds'}}},
-    {$addFields:{winRate:{$multiply:[{$divide:['$wins','$tips']},100]}}},
-    {$sort:{tips:-1,winRate:-1}},{$limit:8}
-  ]);
-  res.json({data:data.map((x:any)=>({prediction:x._id,tips:x.tips,wins:x.wins,losses:x.tips-x.wins,winRate:Number(x.winRate||0),profit:Number(x.profit||0),avgOdds:Number(x.avgOdds||0)}))});
-}catch(e){next(e)}});
 publicRouter.get("/predictions", async(req,res,next)=>{try{
   const page=Math.max(Number(req.query.page)||1,1),limit=Math.min(Math.max(Number(req.query.limit)||30,1),50);
   const search=typeof req.query.search==='string'?req.query.search.trim():'';
@@ -200,6 +191,55 @@ publicRouter.get("/predictions/:id",async(req,res,next)=>{try{
   if(!item)return res.status(404).json({message:'Prediction not found'});
   res.json({data:item});
 }catch(e){next(e)}});
+publicRouter.get("/prediction-trends", async (req,res,next)=>{
+  try {
+    const rawDays=Number(req.query.days||30);
+    const days=Number.isFinite(rawDays)?Math.min(Math.max(Math.floor(rawDays),7),365):30;
+    const end=new Date(); end.setUTCHours(23,59,59,999);
+    const start=new Date(end); start.setUTCDate(start.getUTCDate()-(days-1)); start.setUTCHours(0,0,0,0);
+    const match={status:{$in:['won','lost'] as string[]},resultAt:{$gte:start,$lte:end}};
+    const [summaryRows, markets, dailyRows, distributionRows]=await Promise.all([
+      Prediction.aggregate([
+        {$match:match},
+        {$group:{_id:null,tips:{$sum:1},wins:{$sum:{$cond:[{$eq:['$status','won']},1,0]}},profit:{$sum:{$ifNull:['$profit',0]}},oddsSum:{$sum:{$ifNull:['$odds',0]}}}},
+        {$project:{_id:0,tips:1,wins:1,profit:1,avgOdds:{$cond:[{$gt:['$tips',0]},{$divide:['$oddsSum','$tips']},0]},winRate:{$cond:[{$gt:['$tips',0]},{$multiply:[{$divide:['$wins','$tips']},100]},0]}}}
+      ]),
+      Prediction.aggregate([
+        {$match:match},
+        {$group:{_id:'$prediction',tips:{$sum:1},wins:{$sum:{$cond:[{$eq:['$status','won']},1,0]}},profit:{$sum:{$ifNull:['$profit',0]}},oddsSum:{$sum:{$ifNull:['$odds',0]}}}},
+        {$project:{_id:1,tips:1,wins:1,profit:1,avgOdds:{$cond:[{$gt:['$tips',0]},{$divide:['$oddsSum','$tips']},0]},winRate:{$cond:[{$gt:['$tips',0]},{$multiply:[{$divide:['$wins','$tips']},100]},0]}}},
+        {$sort:{profit:-1,tips:-1}}
+      ]),
+      Prediction.aggregate([
+        {$match:match},
+        {$group:{_id:{$dateToString:{format:'%Y-%m-%d',date:'$resultAt'}},tips:{$sum:1},wins:{$sum:{$cond:[{$eq:['$status','won']},1,0]}},profit:{$sum:{$ifNull:['$profit',0]}}}},
+        {$sort:{_id:1}}
+      ]),
+      Prediction.aggregate([
+        {$match:match},
+        {$group:{_id:'$prediction',tips:{$sum:1}}},
+        {$sort:{tips:-1}}
+      ])
+    ]);
+    const summary=summaryRows[0]||{tips:0,wins:0,profit:0,avgOdds:0,winRate:0};
+    const totalTips=Number(summary.tips||0);
+    const dailyByDate=new Map(dailyRows.map((r:any)=>[r._id,r]));
+    const daily=[];
+    for(let i=0;i<days;i++){
+      const d=new Date(start); d.setUTCDate(start.getUTCDate()+i); const key=d.toISOString().slice(0,10); const r=dailyByDate.get(key);
+      daily.push({date:key,tips:Number(r?.tips||0),wins:Number(r?.wins||0),profit:Number(r?.profit||0),winRate:r?.tips?Number(r.wins||0)/Number(r.tips)*100:0});
+    }
+    const data={
+      rangeDays:days,start:start.toISOString(),end:end.toISOString(),
+      summary:{tips:totalTips,wins:Number(summary.wins||0),winRate:Number(summary.winRate||0),profit:Number(summary.profit||0),avgOdds:Number(summary.avgOdds||0)},
+      markets:markets.map((m:any)=>({market:m._id||'Other',tips:Number(m.tips||0),wins:Number(m.wins||0),winRate:Number(m.winRate||0),profit:Number(m.profit||0),avgOdds:Number(m.avgOdds||0)})),
+      distribution:distributionRows.map((m:any)=>({market:m._id||'Other',tips:Number(m.tips||0),percentage:totalTips?Number(m.tips||0)/totalTips*100:0})),
+      daily,
+    };
+    res.json({data});
+  } catch(e){next(e)}
+});
+
 publicRouter.get("/prediction-history",async(req,res,next)=>{try{const limit=Math.min(Math.max(Number(req.query.limit)||50,1),200);const filter:any={status:{ $in:["won","lost","void"]}};const [data,stats]=await Promise.all([Prediction.find(filter).populate('tipsterId','name').populate({path:'matchId',populate:[{path:'homeTeamId',select:'name shortName logo'},{path:'awayTeamId',select:'name shortName logo'},{path:'leagueId',select:'name logo'}]}).sort({resultAt:-1,createdAt:-1}).limit(limit),Prediction.aggregate([{$match:filter},{$group:{_id:null,total:{$sum:1},wins:{$sum:{$cond:[{$eq:['$status','won']},1,0]}},profit:{$sum:{$ifNull:['$profit',0]}}}},{$project:{_id:0,total:1,wins:1,profit:1,winRate:{$cond:[{$gt:['$total',0]},{$multiply:[{$divide:['$wins','$total']},100]},0]}}}])]);res.json({data,stats:stats[0]||{total:0,wins:0,profit:0,winRate:0}});}catch(e){next(e)}});
 publicRouter.get("/bet-of-day/recent",async(req,res,next)=>{try{const limit=Math.min(Math.max(Number(req.query.limit)||50,1),100);const data=await BetOfDay.find({status:{ $in:["won","lost","void"]}}).populate({path:'matchId',select:'kickoff status homeScore awayScore homeTeamId awayTeamId leagueId',populate:[{path:'homeTeamId',select:'name shortName logo'},{path:'awayTeamId',select:'name shortName logo'},{path:'leagueId',select:'name logo'}]}).sort({date:-1,createdAt:-1}).limit(limit);res.json({data});}catch(e){next(e)}});
 publicRouter.get("/bet-of-day",async(req,res,next)=>{try{const date=typeof req.query.date==='string'?req.query.date:new Date().toISOString().slice(0,10);const data=await BetOfDay.find({date,status:{ $in:["published","won","lost","void"]}}).populate({path:'matchId',populate:[{path:'homeTeamId',select:'name logo'},{path:'awayTeamId',select:'name logo'},{path:'leagueId',select:'name logo'}]}).sort({createdAt:1});res.json({data});}catch(e){next(e)}});

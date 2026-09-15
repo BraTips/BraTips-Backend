@@ -38,7 +38,7 @@ async function syncRecentHistory(){
 
 export function startScheduler(){
   // Prime the database immediately instead of waiting for the 02:00 daily job.
-  void (async()=>{try{await syncCoreDates();await generateBetOfDay(shiftDate(0));}catch(e){console.error('Initial automatic Bet of the Day failed',e)}})();
+  void syncCoreDates();
   void syncRecentHistory();
 
   const scheduleDaily=()=>{setTimeout(async()=>{const date=isoDate(new Date());try{await runSync('daily',date);await generateBetOfDay(date);if(new Date().getUTCDate()===1) await calculatePreviousMonthRewards();}catch(e){console.error('Daily scheduler failed',e);}finally{scheduleDaily();}},msUntilNext(2,0));};
