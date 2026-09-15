@@ -18,7 +18,7 @@ export interface ITipsterProfile extends Document {
   longestStreak: number;
   totalRewardsEarned: number;
   totalRewardsPaid: number;
-  active: boolean;
+  active: boolean; seeded?: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -30,6 +30,6 @@ const schema = new Schema<ITipsterProfile>({
   bio: { type: String, default: "" }, country: String, expertise: { type: [String], default: [] },
   profilePhoto: String, socialLinks: { type: [String], default: [] },
   totalTips: { type: Number, default: 0 }, wins: { type: Number, default: 0 }, losses: { type: Number, default: 0 },
-  profit: { type: Number, default: 0 }, roi: { type: Number, default: 0 }, currentStreak: { type: Number, default: 0 }, longestStreak: { type: Number, default: 0 }, totalRewardsEarned: { type: Number, default: 0 }, totalRewardsPaid: { type: Number, default: 0 }, active: { type: Boolean, default: true, index: true }
+  profit: { type: Number, default: 0 }, roi: { type: Number, default: 0 }, currentStreak: { type: Number, default: 0 }, longestStreak: { type: Number, default: 0 }, totalRewardsEarned: { type: Number, default: 0 }, totalRewardsPaid: { type: Number, default: 0 }, active: { type: Boolean, default: true, index: true }, seeded: { type: Boolean, default: false, index: true }
 }, { timestamps: true });
 export const TipsterProfile = model<ITipsterProfile>("TipsterProfile", schema);
