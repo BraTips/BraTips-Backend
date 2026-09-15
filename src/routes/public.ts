@@ -162,6 +162,15 @@ publicRouter.get("/tipsters/rankings", async(req,res,next)=>{try{
   data.sort((a:any,b:any)=>b.profit-a.profit||b.roi-a.roi||b.winRate-a.winRate); res.json({data,month:`${year}-${String(month).padStart(2,'0')}`});
 }catch(e){next(e)}});
 publicRouter.get("/tipsters/:username", async(req,res,next)=>{try{const profile=await TipsterProfile.findOne({username:req.params.username,active:true}).select("userId username bio country expertise profilePhoto totalTips wins losses profit roi currentStreak longestStreak");if(!profile)return res.status(404).json({message:"Tipster not found"});const predictions=await Prediction.find({tipsterId:profile.userId,status:{ $in:["published","won","lost","void"]}}).populate({path:'matchId',populate:[{path:'homeTeamId',select:'name shortName logo'},{path:'awayTeamId',select:'name shortName logo'},{path:'leagueId',select:'name logo'}]}).sort({publishedAt:-1,createdAt:-1}).limit(100);res.json({data:{profile,predictions}});}catch(e){next(e)}});
+publicRouter.get("/prediction-trends", async(_req,res,next)=>{try{
+  const data=await Prediction.aggregate([
+    {$match:{status:{$in:['won','lost']}}},
+    {$group:{_id:'$prediction',tips:{$sum:1},wins:{$sum:{$cond:[{$eq:['$status','won']},1,0]}},profit:{$sum:{$ifNull:['$profit',0]}},avgOdds:{$avg:'$odds'}}},
+    {$addFields:{winRate:{$multiply:[{$divide:['$wins','$tips']},100]}}},
+    {$sort:{tips:-1,winRate:-1}},{$limit:8}
+  ]);
+  res.json({data:data.map((x:any)=>({prediction:x._id,tips:x.tips,wins:x.wins,losses:x.tips-x.wins,winRate:Number(x.winRate||0),profit:Number(x.profit||0),avgOdds:Number(x.avgOdds||0)}))});
+}catch(e){next(e)}});
 publicRouter.get("/predictions", async(req,res,next)=>{try{
   const page=Math.max(Number(req.query.page)||1,1),limit=Math.min(Math.max(Number(req.query.limit)||30,1),50);
   const search=typeof req.query.search==='string'?req.query.search.trim():'';
