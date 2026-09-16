@@ -139,7 +139,7 @@ export async function syncUpcomingOdds(limit=80){
 
 export { flattenOdds };
 
-export async function syncFixtures(fixtures:any[]) {
+export async function syncFixtures(fixtures:any[], statusOverride?: 'scheduled'|'live'|'finished'|'postponed'|'cancelled') {
   const { League } = await import('../models/League'); const { Team } = await import('../models/Team'); const { Match } = await import('../models/Match'); const { Season } = await import('../models/Season');
   let upserted=0;
   for (const f of fixtures) {
@@ -162,7 +162,7 @@ export async function syncFixtures(fixtures:any[]) {
     const state=[f.state?.developer_name,f.state?.short_name,f.state?.name,f.state?.description].filter(Boolean).join(' ');
     const stateId=Number(f.state?.id);
     const hasResult=Boolean(f.result_info||f.finished_at||f.final_score) || scores.length>0;
-    const status=/LIVE|INPLAY|HALFTIME|1ST_HALF|2ND_HALF|FIRST_HALF|SECOND_HALF|BREAK/i.test(state)
+    const detectedStatus=/LIVE|INPLAY|HALFTIME|1ST_HALF|2ND_HALF|FIRST_HALF|SECOND_HALF|BREAK/i.test(state)
       ? 'live'
       : /POSTPONED/i.test(state)
         ? 'postponed'
@@ -173,6 +173,7 @@ export async function syncFixtures(fixtures:any[]) {
             : (stateId===5 || stateId===6 || stateId===7 || stateId===8) && hasResult
               ? 'finished'
               : 'scheduled';
+          const status=statusOverride || detectedStatus;
     await Match.findOneAndUpdate({externalId:String(f.id)},{externalId:String(f.id),leagueId:league!._id,seasonId:season?._id,homeTeamId:homeTeam!._id,awayTeamId:awayTeam!._id,kickoff:new Date(f.starting_at),status,homeScore:scoreFor(home?.id),awayScore:scoreFor(away?.id),venue:{name:f.venue?.name,city:f.venue?.city}},{upsert:true,new:true,setDefaultsOnInsert:true});
     upserted++;
   }

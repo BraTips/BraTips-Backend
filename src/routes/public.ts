@@ -64,7 +64,7 @@ publicRouter.get("/matches/live", async (_req,res,next)=>{
   try {
     let data=await Match.find({status:"live"}).populate("leagueId","name logo").populate("homeTeamId","name shortName logo").populate("awayTeamId","name shortName logo").sort({kickoff:1});
     // Livescore fallback makes the public Live tab work even if the background scheduler restarted.
-    try { const payload=await fetchLiveFootball(); const fixtures=Array.isArray(payload?.data)?payload.data:[]; if(fixtures.length){ await syncFixtures(fixtures); data=await Match.find({status:"live"}).populate("leagueId","name logo").populate("homeTeamId","name shortName logo").populate("awayTeamId","name shortName logo").sort({kickoff:1}); } } catch(e){ if(!data.length) throw e; console.error('Live fallback failed',e); }
+    try { const payload=await fetchLiveFootball(); const fixtures=Array.isArray(payload?.data)?payload.data:[]; if(fixtures.length){ await syncFixtures(fixtures,'live'); data=await Match.find({status:"live"}).populate("leagueId","name logo").populate("homeTeamId","name shortName logo").populate("awayTeamId","name shortName logo").sort({kickoff:1}); } } catch(e){ if(!data.length) throw e; console.error('Live fallback failed',e); }
     // In-play prices are the live Sportmonks bookmaker feed. Expose them as BraTipsters Odds
     // on the public site and prefer the freshest saved snapshot, falling back to Sportmonks.
     let enriched=await attachLatestOdds(data,'inplay');

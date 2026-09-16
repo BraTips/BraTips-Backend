@@ -13,7 +13,7 @@ async function runSync(type: SyncType, date?: string){
   try{
     const p:any=type==='live'?await fetchLiveFootball():await fetchFixtures(date!);
     const fixtures=Array.isArray(p?.data)?p.data:[];
-    const upserted=await syncFixtures(fixtures);
+    const upserted=await syncFixtures(fixtures,type==='live'?'live':undefined);
     job.status='success';job.fetched=fixtures.length;job.upserted=upserted;job.finishedAt=new Date();await job.save();
     return job;
   }catch(e:any){
