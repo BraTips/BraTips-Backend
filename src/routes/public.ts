@@ -6,7 +6,7 @@ import { Season } from "../models/Season";
 import { Team } from "../models/Team";
 import { Match } from "../models/Match";
 import { OddsSnapshot } from "../models/OddsSnapshot";
-import { fetchFixtures, fetchLiveFootball, fetchFixture, fetchFixtureOdds, fetchHeadToHead, fetchStandingsBySeason, fetchTeamRecentFixtures, flattenOdds, syncFixtures } from "../services/providerService";
+import { fetchFixtures, fetchLiveFootball, fetchFixture, fetchFixtureOdds, fetchHeadToHead, fetchStandingsBySeason, fetchTeamRecentFixtures, flattenOdds, isProviderAccessError, syncFixtures } from "../services/providerService";
 import { generateMatchPredictions } from "../services/predictionEngine";
 export const publicRouter = Router();
 async function attachLatestOdds(data:any[], mode:'pre-match'|'inplay'='pre-match'){
@@ -154,7 +154,10 @@ publicRouter.get("/matches/:id/odds", async (req,res,next)=>{
     const mode=req.query.mode==='inplay'?'inplay':'pre-match';
     let rows=await OddsSnapshot.find({matchId:match._id,mode}).sort({recordedAt:-1}).limit(500);
     if(!rows.length && match.externalId){
-      const payload=await fetchFixtureOdds(String(match.externalId),mode);
+      const payload=await fetchFixtureOdds(String(match.externalId),mode).catch((e:any)=>{
+        if(isProviderAccessError(e)) return {data:[]};
+        throw e;
+      });
       const live=flattenOdds(payload);
       rows=live.map((o:any)=>({fixtureExternalId:o.fixtureId,bookmakerId:o.bookmakerId,bookmakerName:o.bookmakerName,marketId:o.marketId,marketName:o.marketName,label:o.label,value:o.value,previousValue:undefined,movementPct:undefined,mode,bookmakerUpdatedAt:o.bookmakerUpdatedAt,recordedAt:new Date()})) as any;
     }

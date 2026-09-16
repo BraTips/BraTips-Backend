@@ -1,6 +1,12 @@
 import { providerConfig } from '../config/providers';
 import { OddsSnapshot } from '../models/OddsSnapshot';
 
+type IncludeRequest = {
+  path: string;
+  includes: string[];
+  optionalIncludes?: string[];
+};
+
 async function requestJson(url: string) {
   const c = providerConfig().sportmonks;
 
@@ -34,8 +40,56 @@ async function requestJson(url: string) {
   return body;
 }
 
+function errorMessage(error:any) {
+  return String(error?.message || error || '');
+}
+
+export function isProviderAccessError(error:any) {
+  return /do not have access|not included in your subscription|forbidden|unauthorized/i.test(errorMessage(error));
+}
+
+function inaccessibleInclude(error:any) {
+  return errorMessage(error).match(/access to the ['"]([^'"]+)['"] include/i)?.[1]?.toLowerCase();
+}
+
+function includeRoot(include:string) {
+  return include.split('.')[0].toLowerCase();
+}
+
+const disabledOptionalIncludeRoots = new Set<string>();
+
+async function requestJsonWithOptionalIncludes({ path, includes, optionalIncludes = [] }: IncludeRequest) {
+  const optionalRoots = new Set(optionalIncludes.map(includeRoot));
+  let active = includes.filter((include) => !disabledOptionalIncludeRoots.has(includeRoot(include)));
+
+  while (true) {
+    try {
+      return await requestJson(url(path, { include: active.join(';') }));
+    } catch (error) {
+      const blocked = inaccessibleInclude(error);
+      if (blocked && !optionalRoots.has(blocked)) throw error;
+      const next = active.filter((include) => {
+        const root = includeRoot(include);
+        return blocked ? root !== blocked : !optionalRoots.has(root);
+      });
+
+      if (!isProviderAccessError(error) || next.length === active.length) throw error;
+
+      if (blocked) disabledOptionalIncludeRoots.add(blocked);
+      else optionalRoots.forEach((root) => disabledOptionalIncludeRoots.add(root));
+      console.warn(
+        `Sportmonks optional include unavailable${blocked ? ` (${blocked})` : ''}; retrying without it.`
+      );
+      active = next;
+    }
+  }
+}
+
 function requireToken() { const c = providerConfig().sportmonks; if (!c.apiKey) throw new Error('Sportmonks is not configured. Set FOOTBALL_API_KEY in bratips-backend/.env.'); return c; }
 function url(path: string, params: Record<string,string|undefined> = {}) { const c=requireToken(); const u=new URL(`${c.baseUrl}${path}`); Object.entries(params).forEach(([k,v])=>v!==undefined&&u.searchParams.set(k,v)); return u.toString(); }
+
+const fixtureIncludes = ['participants','scores','state','events.type','lineups.player','statistics.type','xgfixture.type','predictions.type','league','venue'];
+const optionalFixtureIncludes = ['events.type','lineups.player','statistics.type','xgfixture.type','predictions.type'];
 
 export async function fetchLiveFootball() {
   requireToken();
@@ -43,15 +97,15 @@ export async function fetchLiveFootball() {
 }
 export async function fetchFixtures(date: string) {
   requireToken();
-  return requestJson(url(`/fixtures/date/${encodeURIComponent(date)}`, { include:'participants;scores;state;events.type;lineups.player;statistics.type;xgfixture.type;predictions.type;league;venue' }));
+  return requestJsonWithOptionalIncludes({ path: `/fixtures/date/${encodeURIComponent(date)}`, includes: fixtureIncludes, optionalIncludes: optionalFixtureIncludes });
 }
 export async function fetchFixturesBetween(startDate: string, endDate: string) {
   requireToken();
-  return requestJson(url(`/fixtures/between/${encodeURIComponent(startDate)}/${encodeURIComponent(endDate)}`, { include:'participants;scores;state;events.type;lineups.player;statistics.type;xgfixture.type;predictions.type;league;venue' }));
+  return requestJsonWithOptionalIncludes({ path: `/fixtures/between/${encodeURIComponent(startDate)}/${encodeURIComponent(endDate)}`, includes: fixtureIncludes, optionalIncludes: optionalFixtureIncludes });
 }
 export async function fetchFixture(fixtureId: string) {
   requireToken();
-  return requestJson(url(`/fixtures/${encodeURIComponent(fixtureId)}`, { include:'participants;scores;state;events.type;lineups.player;statistics.type;xgfixture.type;predictions.type;league;venue' }));
+  return requestJsonWithOptionalIncludes({ path: `/fixtures/${encodeURIComponent(fixtureId)}`, includes: fixtureIncludes, optionalIncludes: optionalFixtureIncludes });
 }
 export async function fetchOdds(mode:'pre-match'|'inplay'='pre-match') {
   requireToken();
@@ -132,12 +186,68 @@ export async function syncUpcomingOdds(limit=80){
   const matches=await Match.find({status:'scheduled',kickoff:{$gte:now,$lte:end},externalId:{$exists:true,$ne:''}}).sort({kickoff:1}).limit(limit);
   let saved=0;
   for(const match of matches){
-    try{ saved+=await syncFixtureOdds(match,'pre-match'); }catch(e){ console.error('Odds sync failed',String(match.externalId),e); }
+    try{ saved+=await syncFixtureOdds(match,'pre-match'); }catch(e){ if(isProviderAccessError(e)){ console.warn('Odds sync skipped because the provider plan does not allow this endpoint.'); break; } console.error('Odds sync failed',String(match.externalId),e); }
   }
   return {matches:matches.length,saved};
 }
 
 export { flattenOdds };
+
+function cleanExternalId(value:any) {
+  const id = String(value ?? '').trim();
+  return id || undefined;
+}
+
+function cleanText(value:any, fallback:string) {
+  const text = String(value ?? '').trim();
+  return text || fallback;
+}
+
+function isDuplicateKeyError(error:any) {
+  return error?.code === 11000 || error?.codeName === 'DuplicateKey';
+}
+
+async function upsertLeague(League:any, fixture:any) {
+  const externalId = cleanExternalId(fixture.league_id ?? fixture.league?.id);
+  const name = cleanText(fixture.league?.name, externalId ? `League ${externalId}` : 'Unknown League');
+  const country = cleanText(fixture.league?.country?.name ?? fixture.league?.country, 'Unknown');
+  const update = { name, country, logo: fixture.league?.image_path || '', active: true, ...(externalId ? { externalId } : {}) };
+  const selectors = externalId ? [{ externalId }, { name, country }] : [{ name, country }];
+
+  try {
+    return await League.findOneAndUpdate(
+      { $or: selectors },
+      update,
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+  } catch (error) {
+    if (!isDuplicateKeyError(error)) throw error;
+    const existing = await League.findOne({ name, country }) || (externalId ? await League.findOne({ externalId }) : null);
+    if (!existing) throw error;
+    return League.findByIdAndUpdate(existing._id, update, { new: true });
+  }
+}
+
+async function upsertSeason(Season:any, league:any, fixture:any) {
+  const externalId = cleanExternalId(fixture.season_id ?? fixture.season?.id);
+  if (!externalId) return null;
+
+  const name = cleanText(fixture.season?.name, `Season ${externalId}`);
+  const update = { leagueId: league._id, externalId, name, active: true };
+
+  try {
+    return await Season.findOneAndUpdate(
+      { leagueId: league._id, $or: [{ externalId }, { name }] },
+      update,
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+  } catch (error) {
+    if (!isDuplicateKeyError(error)) throw error;
+    const existing = await Season.findOne({ leagueId: league._id, name }) || await Season.findOne({ leagueId: league._id, externalId });
+    if (!existing) throw error;
+    return Season.findByIdAndUpdate(existing._id, update, { new: true });
+  }
+}
 
 export async function syncFixtures(fixtures:any[], statusOverride?: 'scheduled'|'live'|'finished'|'postponed'|'cancelled') {
   const { League } = await import('../models/League'); const { Team } = await import('../models/Team'); const { Match } = await import('../models/Match'); const { Season } = await import('../models/Season');
@@ -146,9 +256,8 @@ export async function syncFixtures(fixtures:any[], statusOverride?: 'scheduled'|
     const participants = Array.isArray(f.participants) ? f.participants : [];
     const home = participants.find((p:any)=>p.meta?.location==='home') || participants[0];
     const away = participants.find((p:any)=>p.meta?.location==='away') || participants[1];
-    const league = await League.findOneAndUpdate({externalId:String(f.league_id ?? f.league?.id ?? '')},{externalId:String(f.league_id ?? f.league?.id ?? ''),name:f.league?.name||`League ${f.league_id}`,country:f.league?.country?.name||f.league?.country||'Unknown',logo:f.league?.image_path||'',active:true},{upsert:true,new:true,setDefaultsOnInsert:true});
-    const seasonExternalId = f.season_id ?? f.season?.id;
-    const season = seasonExternalId ? await Season.findOneAndUpdate({leagueId:league!._id,externalId:String(seasonExternalId)},{leagueId:league!._id,externalId:String(seasonExternalId),name:f.season?.name||`Season ${seasonExternalId}`,active:true},{upsert:true,new:true,setDefaultsOnInsert:true}) : null;
+    const league = await upsertLeague(League, f);
+    const season = await upsertSeason(Season, league, f);
     const saveTeam=async(p:any)=>Team.findOneAndUpdate({externalId:String(p?.id ?? '')},{externalId:String(p?.id ?? ''),name:p?.name||'Unknown',shortName:p?.short_code||'',logo:p?.image_path || p?.image?.path || p?.logo || '',active:true},{upsert:true,new:true,setDefaultsOnInsert:true});
     const homeTeam=await saveTeam(home), awayTeam=await saveTeam(away);
     const scores=Array.isArray(f.scores)?f.scores:[];
