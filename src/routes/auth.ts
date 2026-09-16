@@ -69,7 +69,7 @@ authRouter.post("/login", async (req, res) => {
   const refreshToken = signRefreshToken(user.id, placeholder.id);
   placeholder.tokenHash = hashToken(refreshToken); await placeholder.save();
   res.cookie("refreshToken", refreshToken, { ...cookieOptions(), maxAge: 7*86400000 });
-  res.json({ user: { id: user.id, name: user.name, email: user.email, role: user.role }, accessToken: signAccessToken(user.id, user.role) });
+  res.json({ user: { id: user.id, name: user.name, email: user.email, role: user.role }, accessToken: signAccessToken(user.id, user.role, placeholder.id) });
 });
 
 authRouter.post("/refresh", async (req, res) => {
@@ -90,7 +90,7 @@ authRouter.post("/refresh", async (req, res) => {
     const newRefresh = signRefreshToken(user.id, replacement.id);
     replacement.tokenHash = hashToken(newRefresh); await replacement.save();
     res.cookie("refreshToken", newRefresh, { ...cookieOptions(), maxAge: 7*86400000 });
-    res.json({ user: { id: user.id, name: user.name, email: user.email, role: user.role }, accessToken: signAccessToken(user.id, user.role) });
+    res.json({ user: { id: user.id, name: user.name, email: user.email, role: user.role }, accessToken: signAccessToken(user.id, user.role, replacement.id) });
   } catch { res.status(401).json({ message: "Invalid refresh session" }); }
 });
 

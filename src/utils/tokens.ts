@@ -3,8 +3,8 @@ import jwt, { type SignOptions } from "jsonwebtoken";
 import { env } from "../config/env";
 import type { UserRole } from "../models/User";
 
-export function signAccessToken(userId: string, role: UserRole) {
-  return jwt.sign({ sub: userId, role, type: "access" }, env.JWT_ACCESS_SECRET, {
+export function signAccessToken(userId: string, role: UserRole, sessionId: string) {
+  return jwt.sign({ sub: userId, role, sid: sessionId, type: "access" }, env.JWT_ACCESS_SECRET, {
     expiresIn: env.ACCESS_TOKEN_EXPIRES_IN as SignOptions["expiresIn"]
   });
 }
