@@ -171,18 +171,34 @@ publicRouter.get("/matches/:id", async (req,res)=>{
 publicRouter.get('/dropping-odds',async(req,res,next)=>{
   try{
     const minDrop=Math.max(Number(req.query.minDrop)||0,0);
+    const now=new Date();
+    const end=new Date(now.getTime()+72*60*60*1000);
+
+    // Restrict the odds scan to matches that can actually appear on this page.
+    // OddsSnapshot can contain a very large historical collection, so sorting the
+    // entire collection can exceed MongoDB's in-memory aggregation limit.
+    const matches=await Match.find({
+      kickoff:{$gte:now,$lte:end},
+      status:{$in:['scheduled','live']}
+    }).select('_id kickoff status homeTeamId awayTeamId leagueId').lean();
+
+    if(!matches.length) return res.json({data:[]});
+
+    const matchIds=matches.map((m:any)=>m._id);
     const rows=await OddsSnapshot.aggregate([
-      {$match:{mode:'pre-match',movementPct:{$lte:-minDrop}}},
+      {$match:{matchId:{$in:matchIds},mode:'pre-match',movementPct:{$lte:-minDrop}}},
       {$sort:{movementPct:1,recordedAt:-1}},
       {$group:{_id:{matchId:'$matchId',bookmakerId:'$bookmakerId',marketId:'$marketId',label:'$label'},row:{$first:'$$ROOT'}}},
       {$replaceRoot:{newRoot:'$row'}},
-      {$sort:{movementPct:1,recordedAt:-1}},{$limit:1000}
-    ]);
-    const matchIds=rows.map(x=>x.matchId);
-    const now=new Date();
-    const end=new Date(now.getTime()+72*60*60*1000);
-    const matches=await Match.find({_id:{$in:matchIds},kickoff:{$gte:now,$lte:end},status:{$in:['scheduled','live']}}).populate('leagueId','name logo').populate('homeTeamId','name shortName logo').populate('awayTeamId','name shortName logo');
-    const byId=new Map(matches.map((m:any)=>[String(m._id),m]));
+      {$sort:{movementPct:1,recordedAt:-1}},
+      {$limit:1000}
+    ]).allowDiskUse(true);
+
+    const fullMatches=await Match.find({_id:{$in:rows.map(x=>x.matchId)}})
+      .populate('leagueId','name logo')
+      .populate('homeTeamId','name shortName logo')
+      .populate('awayTeamId','name shortName logo');
+    const byId=new Map(fullMatches.map((m:any)=>[String(m._id),m]));
     res.json({data:rows.map(x=>({...x,matchId:byId.get(String(x.matchId))||null})).filter(x=>x.matchId)});
   }catch(e){next(e)}
 });
