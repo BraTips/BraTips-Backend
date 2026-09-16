@@ -11,8 +11,11 @@ export function requireAuth(req: AuthRequest, res: Response, next: NextFunction)
   try {
     const payload = jwt.verify(header.slice(7), env.JWT_ACCESS_SECRET) as { sub: string; role: UserRole; type?: string };
     if (payload.type !== "access") return res.status(401).json({ message: "Invalid access token" });
-    req.user = { id: payload.sub, role: payload.role };
-    next();
+    void User.findById(payload.sub).select("_id role status").then((user) => {
+      if (!user || user.status !== "active") return res.status(401).json({ message: "Account is not active" });
+      req.user = { id: String(user._id), role: user.role };
+      next();
+    }).catch(() => res.status(401).json({ message: "Authentication failed" }));
   } catch { return res.status(401).json({ message: "Invalid or expired token" }); }
 }
 
@@ -21,7 +24,13 @@ export function optionalAuth(req: AuthRequest, _res: Response, next: NextFunctio
   if (!header?.startsWith("Bearer ")) return next();
   try {
     const payload = jwt.verify(header.slice(7), env.JWT_ACCESS_SECRET) as { sub: string; role: UserRole; type?: string };
-    if (payload.type === "access") req.user = { id: payload.sub, role: payload.role };
+    if (payload.type === "access") {
+      void User.findById(payload.sub).select("_id role status").then((user) => {
+        if (user?.status === "active") req.user = { id: String(user._id), role: user.role };
+        next();
+      }).catch(() => next());
+      return;
+    }
   } catch {}
   next();
 }
