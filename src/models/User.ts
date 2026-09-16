@@ -1,5 +1,13 @@
 import { Schema, model, type Document } from "mongoose";
 
+/**
+ * Account roles are mutually exclusive routing/permission roles.
+ * - user: regular member, including Premium subscribers
+ * - tipster: approved publisher with access to the Tipster Dashboard
+ * - admin: platform administration (served by the admin application)
+ *
+ * Premium is intentionally NOT a role; it is determined by Subscription status.
+ */
 export type UserRole = "user" | "admin" | "tipster";
 export type UserStatus = "active" | "suspended";
 
