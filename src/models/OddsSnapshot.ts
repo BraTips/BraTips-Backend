@@ -33,5 +33,4 @@ const schema = new Schema<IOddsSnapshot>({
 },{timestamps:true});
 
 schema.index({matchId:1,bookmakerId:1,marketId:1,label:1,mode:1,recordedAt:-1});
-schema.index({mode:1,movementPct:1,recordedAt:-1});
 export const OddsSnapshot=model<IOddsSnapshot>('OddsSnapshot',schema);

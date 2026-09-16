@@ -121,15 +121,3 @@ BraTipsters uses a manual tipster payout workflow. Stripe remains the subscripti
 BraTipsters supports branded transactional email through SMTP configured from Admin → Settings → Email Configuration. Cloudflare provides DNS/domain management but does not itself provide outbound SMTP sending. Use an SMTP mailbox/provider and set the From address to a verified address on your domain.
 
 Emails currently cover: new account welcome, tipster application received, tipster application decisions/updates, and tipster withdrawal status. The SMTP password is encrypted before being stored in MongoDB. Wallet reward approval, release, and withdrawal reservation use MongoDB transactions, so the production database must support transactions (MongoDB Atlas/replica set). Set `EMAIL_CONFIG_ENCRYPTION_KEY` (32+ characters) for a dedicated encryption key; if omitted, the JWT access secret is used as the key.
-
-
-## Account roles and dashboard routing
-
-`User.role` is the authoritative account role:
-- `user` = regular member, including members who subscribe to Premium tips.
-- `tipster` = approved tipster; routed to the Tipster Dashboard.
-- `admin` = administrator; routed by the separate admin application.
-
-Premium access is deliberately **not** a role. It is controlled by the `Subscription` model/status. A member can therefore subscribe to Premium without becoming a tipster.
-
-Public registration always creates `role: "user"`. Tipster onboarding uses `/auth/tipster-apply`; only an admin approval changes the applicant's user role to `tipster`.
