@@ -214,7 +214,25 @@ publicRouter.get("/predictions", optionalAuth, async(req:AuthRequest,res,next)=>
   const market=typeof req.query.market==='string'?req.query.market.trim().toLowerCase():'';
   const horizon=typeof req.query.horizon==='string' && ['daily','weekly'].includes(req.query.horizon)?req.query.horizon:undefined;
   const filter:any={status:{ $in:["published","won","lost","void"]}};
-  if(horizon)filter.horizon=horizon;
+  if(horizon){
+    filter.horizon=horizon;
+    // Keep the public daily/weekly feeds scoped to the current calendar period.
+    // Otherwise previously generated weekly records remain visible after the week changes.
+    const now=new Date();
+    const periodStart=new Date(now); periodStart.setUTCHours(0,0,0,0);
+    const periodEnd=new Date(periodStart);
+    if(horizon==='weekly'){
+      const day=periodStart.getUTCDay();
+      const daysSinceMonday=day===0?6:day-1;
+      periodStart.setUTCDate(periodStart.getUTCDate()-daysSinceMonday);
+      periodEnd.setTime(periodStart.getTime());
+      periodEnd.setUTCDate(periodEnd.getUTCDate()+7);
+    }else{
+      periodEnd.setUTCDate(periodEnd.getUTCDate()+1);
+    }
+    const periodMatches=await Match.find({kickoff:{$gte:periodStart,$lt:periodEnd}}).select('_id').lean();
+    filter.matchId={$in:periodMatches.map((m:any)=>m._id)};
+  }
   if(String(req.query.tipster||'')==='true') filter.tipsterId={$exists:true,$ne:null};
   if(String(req.query.upcoming||'')==='true'){
     const upcomingMatches=await Match.find({status:'scheduled',kickoff:{$gt:new Date()}}).select('_id').lean();

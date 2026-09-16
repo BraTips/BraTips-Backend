@@ -211,5 +211,14 @@ export async function generateDailyPredictions(date=new Date().toISOString().sli
   const start=new Date(`${date}T00:00:00.000Z`),end=new Date(start);end.setUTCDate(end.getUTCDate()+1); return generateForHorizon('daily',start,end);
 }
 export async function generateWeeklyPredictions(date=new Date().toISOString().slice(0,10)){
-  const start=new Date(`${date}T00:00:00.000Z`),end=new Date(start);end.setUTCDate(end.getUTCDate()+7); return generateForHorizon('weekly',start,end);
+  const d=new Date(`${date}T00:00:00.000Z`);
+  if(Number.isNaN(d.getTime())) throw new Error('Invalid weekly prediction date');
+  const day=d.getUTCDay();
+  const daysSinceMonday=day===0?6:day-1;
+  const start=new Date(d);
+  start.setUTCDate(start.getUTCDate()-daysSinceMonday);
+  start.setUTCHours(0,0,0,0);
+  const end=new Date(start);
+  end.setUTCDate(end.getUTCDate()+7);
+  return generateForHorizon('weekly',start,end);
 }
