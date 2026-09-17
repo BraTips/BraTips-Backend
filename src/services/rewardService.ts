@@ -191,11 +191,11 @@ export async function settleWithdrawal(id:string,status:'approved'|'paid'|'rejec
       withdrawal=await WithdrawalRequest.findById(id).session(session); if(!withdrawal) throw new Error('Withdrawal request not found');
       if(adminNote!==undefined) withdrawal.adminNote=adminNote;
       if(status==='approved'){
-        if(withdrawal.status!=='pending') { if(withdrawal.status==='approved'){ emailPayload={status:withdrawal.status,amount:withdrawal.amount,tipsterId:withdrawal.tipsterId}; return; } throw new Error('Only pending withdrawals can be approved.'); }
+        if(withdrawal.status!=='pending') { if(withdrawal.status==='approved'){ emailPayload={status:withdrawal.status,amount:withdrawal.amount,currency:withdrawal.currency,tipsterId:withdrawal.tipsterId}; return; } throw new Error('Only pending withdrawals can be approved.'); }
         withdrawal.status='approved'; withdrawal.approvedAt=new Date(); await withdrawal.save({session});
       }
       if(status==='rejected'){
-        if(['rejected','cancelled'].includes(withdrawal.status)){ emailPayload={status:withdrawal.status,amount:withdrawal.amount,tipsterId:withdrawal.tipsterId}; return; }
+        if(['rejected','cancelled'].includes(withdrawal.status)){ emailPayload={status:withdrawal.status,amount:withdrawal.amount,currency:withdrawal.currency,tipsterId:withdrawal.tipsterId}; return; }
         if(['pending','approved'].includes(withdrawal.status)){
           await TipsterWallet.updateOne({_id:withdrawal.walletId},{$inc:{availableBalance:withdrawal.amount}},{session});
           await WalletTransaction.updateOne({reference:`withdrawal:${withdrawal._id}`,status:'pending'},{$set:{status:'cancelled'}},{session});
@@ -203,18 +203,18 @@ export async function settleWithdrawal(id:string,status:'approved'|'paid'|'rejec
         withdrawal.status='rejected'; withdrawal.rejectedAt=new Date(); await withdrawal.save({session});
       }
       if(status==='paid'){
-        if(withdrawal.status==='paid'){ emailPayload={status:withdrawal.status,amount:withdrawal.amount,tipsterId:withdrawal.tipsterId}; return; }
+        if(withdrawal.status==='paid'){ emailPayload={status:withdrawal.status,amount:withdrawal.amount,currency:withdrawal.currency,tipsterId:withdrawal.tipsterId}; return; }
         if(!['approved','pending'].includes(withdrawal.status)) throw new Error('Withdrawal cannot be marked paid from its current status.');
         withdrawal.status='paid'; withdrawal.paidAt=new Date(); await withdrawal.save({session});
         await TipsterWallet.updateOne({_id:withdrawal.walletId},{$inc:{lifetimeWithdrawn:withdrawal.amount}},{session});
         await TipsterProfile.updateOne({_id:withdrawal.tipsterId},{$inc:{totalRewardsPaid:withdrawal.amount}},{session});
         await WalletTransaction.updateOne({reference:`withdrawal:${withdrawal._id}`,status:'pending'},{$set:{status:'completed'}},{session});
       }
-      emailPayload={status:withdrawal.status,amount:withdrawal.amount,tipsterId:withdrawal.tipsterId};
+      emailPayload={status:withdrawal.status,amount:withdrawal.amount,currency:withdrawal.currency,tipsterId:withdrawal.tipsterId};
     });
     const profile=await TipsterProfile.findById(emailPayload.tipsterId).populate('userId','email name');
     const u:any=profile?.userId;
-    if(u?.email) await sendWithdrawalEmail(u.email,u.name||'Tipster',emailPayload.status,emailPayload.amount).catch(()=>{});
+    if(u?.email) await sendWithdrawalEmail(u.email,u.name||'Tipster',emailPayload.status,emailPayload.amount,emailPayload.currency).catch(()=>{});
     return withdrawal;
   } finally { await session.endSession(); }
 }
