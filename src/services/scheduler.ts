@@ -1,4 +1,4 @@
-import { fetchLiveFootball, fetchFixtures, fetchFixturesBetween, syncFixtures, syncUpcomingOdds } from './providerService';
+import { fetchLiveFootball, fetchFixtures, fetchFixturesBetween, syncFixtures, syncLiveFixtures, syncUpcomingOdds } from './providerService';
 import { SyncJob } from '../models/SyncJob';
 import { generateBetOfDay } from './aiBetService';
 import { generateDailyPredictions, generateWeeklyPredictions } from './predictionEngine';
@@ -13,7 +13,8 @@ async function runSync(type: SyncType, date?: string){
   try{
     const p:any=type==='live'?await fetchLiveFootball():await fetchFixtures(date!);
     const fixtures=Array.isArray(p?.data)?p.data:[];
-    const upserted=await syncFixtures(fixtures,type==='live'?'live':undefined);
+    const syncResult=type==='live'?await syncLiveFixtures(fixtures):{upserted:await syncFixtures(fixtures),refreshed:0};
+    const upserted=syncResult.upserted+(syncResult.refreshed||0);
     job.status='success';job.fetched=fixtures.length;job.upserted=upserted;job.finishedAt=new Date();await job.save();
     return job;
   }catch(e:any){

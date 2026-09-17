@@ -6,7 +6,7 @@ import { Season } from "../models/Season";
 import { Team } from "../models/Team";
 import { Match } from "../models/Match";
 import { OddsSnapshot } from "../models/OddsSnapshot";
-import { fetchFixtures, fetchLiveFootball, fetchFixture, fetchFixtureOdds, fetchHeadToHead, fetchStandingsBySeason, fetchTeamRecentFixtures, flattenOdds, isProviderAccessError, syncFixtures } from "../services/providerService";
+import { fetchFixtures, fetchLiveFootball, fetchFixture, fetchFixtureOdds, fetchHeadToHead, fetchStandingsBySeason, fetchTeamRecentFixtures, flattenOdds, isProviderAccessError, syncFixtures, syncLiveFixtures } from "../services/providerService";
 import { generateMatchPredictions } from "../services/predictionEngine";
 export const publicRouter = Router();
 async function attachLatestOdds(data:any[], mode:'pre-match'|'inplay'='pre-match'){
@@ -26,6 +26,8 @@ function bestPublicOdds(rows:any[]){
   }
   return [...best.values()].sort((a,b)=>Number(b.value||0)-Number(a.value||0)).slice(0,12);
 }
+
+function liveMatchFilter(){ return {status:"live",kickoff:{$gte:new Date(Date.now()-4*60*60*1000)}}; }
 
 
 publicRouter.get("/leagues", async (_req,res)=>res.json({data: await League.find({active:true}).sort({name:1})}));
@@ -65,9 +67,9 @@ publicRouter.get("/matches/today", async (_req,res,next)=>{
 });
 publicRouter.get("/matches/live", async (_req,res,next)=>{
   try {
-    let data=await Match.find({status:"live"}).populate("leagueId","name logo").populate("homeTeamId","name shortName logo").populate("awayTeamId","name shortName logo").sort({kickoff:1});
+    let data=await Match.find(liveMatchFilter()).populate("leagueId","name logo").populate("homeTeamId","name shortName logo").populate("awayTeamId","name shortName logo").sort({kickoff:1});
     // Livescore fallback makes the public Live tab work even if the background scheduler restarted.
-    try { const payload=await fetchLiveFootball(); const fixtures=Array.isArray(payload?.data)?payload.data:[]; if(fixtures.length){ await syncFixtures(fixtures,'live'); data=await Match.find({status:"live"}).populate("leagueId","name logo").populate("homeTeamId","name shortName logo").populate("awayTeamId","name shortName logo").sort({kickoff:1}); } } catch(e){ if(!data.length) throw e; console.error('Live fallback failed',e); }
+    try { const payload=await fetchLiveFootball(); const fixtures=Array.isArray(payload?.data)?payload.data:[]; await syncLiveFixtures(fixtures); data=await Match.find(liveMatchFilter()).populate("leagueId","name logo").populate("homeTeamId","name shortName logo").populate("awayTeamId","name shortName logo").sort({kickoff:1}); } catch(e){ if(!data.length) throw e; console.error('Live fallback failed',e); }
     // In-play prices are the live Sportmonks bookmaker feed. Expose them as BraTipsters Odds
     // on the public site and prefer the freshest saved snapshot, falling back to Sportmonks.
     let enriched=await attachLatestOdds(data,'inplay');

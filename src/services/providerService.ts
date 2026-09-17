@@ -93,7 +93,7 @@ const optionalFixtureIncludes = ['events.type','lineups.player','statistics.type
 
 export async function fetchLiveFootball() {
   requireToken();
-  return requestJson(url('/livescores/inplay', { include:'participants;scores;events.type;periods;league;venue' }));
+  return requestJson(url('/livescores/inplay', { include:'participants;scores;events.type;periods;league;venue;state' }));
 }
 export async function fetchFixtures(date: string) {
   requireToken();
@@ -287,4 +287,21 @@ export async function syncFixtures(fixtures:any[], statusOverride?: 'scheduled'|
     upserted++;
   }
   return upserted;
+}
+
+export async function syncLiveFixtures(fixtures:any[]) {
+  const { Match } = await import('../models/Match');
+  const activeExternalIds=[...new Set(fixtures.map((f:any)=>cleanExternalId(f.id)).filter(Boolean))];
+  const upserted=await syncFixtures(fixtures);
+  const staleFilter:any={status:'live',externalId:{$exists:true,$ne:''}};
+  if(activeExternalIds.length) staleFilter.externalId={$nin:activeExternalIds};
+  const stale=await Match.find(staleFilter).sort({kickoff:1}).limit(100);
+  let refreshed=0;
+  for(const match of stale){
+    try{
+      const payload:any=await fetchFixture(String(match.externalId));
+      if(payload?.data) refreshed+=await syncFixtures([payload.data]);
+    }catch(e){console.error('Stale live fixture refresh failed',String(match.externalId),e);}
+  }
+  return {upserted,refreshed,staleChecked:stale.length};
 }
