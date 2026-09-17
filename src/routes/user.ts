@@ -1,5 +1,8 @@
 import {Router} from 'express'; import {z} from 'zod'; import {requireAuth,requireRole,type AuthRequest} from '../middleware/auth'; import {Prediction} from '../models/Prediction'; import {Match} from '../models/Match'; import {TipsterProfile} from '../models/TipsterProfile'; import {UserPick} from '../models/UserPick'; import {Notification} from '../models/Notification'; import {TipsterFollow} from '../models/TipsterFollow'; import { getTipsterWallet, requestWithdrawal } from '../services/rewardService';
 import { Subscription } from '../models/Subscription';
+import { Report } from '../models/Report';
+import { User } from '../models/User';
+import { notifyMany } from '../services/notificationService';
 export const userRouter=Router(); userRouter.use(requireAuth);
 userRouter.get('/picks',async(req:AuthRequest,res,next)=>{try{const data=await UserPick.find({userId:req.user!.id}).populate({path:'predictionId',populate:[{path:'tipsterId',select:'name'},{path:'matchId'}]}).sort({createdAt:-1}).limit(200);res.json({data})}catch(e){next(e)}});
 userRouter.post('/picks',async(req:AuthRequest,res,next)=>{try{const b=z.object({predictionId:z.string().regex(/^[a-f\d]{24}$/i),stake:z.coerce.number().positive().max(100000)}).parse(req.body);const p=await Prediction.findOne({_id:b.predictionId,status:'published'});if(!p)return res.status(404).json({message:'Published prediction not found'});if(p.isPremium){const premium=await Subscription.exists({userId:req.user!.id,plan:'premium',status:{$in:['active','trialing']}});if(!premium)return res.status(403).json({message:'Premium subscription required for this prediction'});}const existing=await UserPick.findOne({userId:req.user!.id,predictionId:p._id,status:'open'});if(existing)return res.status(409).json({message:'This pick is already in your list'});const item=await UserPick.create({userId:req.user!.id,predictionId:p._id,stake:b.stake,potentialReturn:Math.round(b.stake*p.odds*100)/100});res.status(201).json({data:item})}catch(e){next(e)}});
@@ -18,3 +21,24 @@ userRouter.post('/tipster/predictions',requireRole('tipster'),async(req:AuthRequ
 
 userRouter.get('/tipster/wallet',requireRole('tipster'),async(req:AuthRequest,res,next)=>{try{res.json({data:await getTipsterWallet(req.user!.id)});}catch(e){next(e)}});
 userRouter.post('/tipster/wallet/withdraw',requireRole('tipster'),async(req:AuthRequest,res,next)=>{try{const b=z.object({amount:z.coerce.number().positive(),method:z.enum(['mobile_money','bank_transfer']),accountName:z.string().min(2).max(120),accountNumber:z.string().min(5).max(40),institution:z.string().min(2).max(120),note:z.string().max(500).optional()}).parse(req.body);res.status(201).json({data:await requestWithdrawal(req.user!.id,b.amount,b.method,{accountName:b.accountName,accountNumber:b.accountNumber,institution:b.institution},b.note),message:'Withdrawal request submitted for admin processing.'});}catch(e){next(e)}});
+
+// Reporting / support tickets — available to members and tipsters alike. Covers content
+// moderation reports (a bad/abusive tip), support tickets (a bug or technical issue) and
+// financial/dispute reports (payouts, subscriptions, withdrawals).
+const reportBody=z.object({
+  category:z.enum(['content','support','financial']),
+  subject:z.string().trim().min(3).max(150),
+  description:z.string().trim().min(10).max(3000),
+  targetType:z.enum(['prediction','tipster','user','transaction','withdrawal','other']).optional(),
+  targetId:z.string().trim().max(60).optional()
+});
+userRouter.get('/reports',async(req:AuthRequest,res,next)=>{try{const data=await Report.find({reporterId:req.user!.id}).sort({createdAt:-1}).limit(200);res.json({data})}catch(e){next(e)}});
+userRouter.post('/reports',async(req:AuthRequest,res,next)=>{try{
+  const b=reportBody.parse(req.body);
+  const priority=b.category==='financial'?'high':'medium';
+  const item=await Report.create({reporterId:req.user!.id,reporterRole:req.user!.role,category:b.category,subject:b.subject,description:b.description,targetType:b.targetType,targetId:b.targetId,priority});
+  const admins=await User.find({role:'admin',status:'active'}).select('_id');
+  const categoryLabel=b.category==='content'?'Content report':b.category==='financial'?'Financial dispute':'Support ticket';
+  await notifyMany(admins.map(a=>a._id),{type:'system',title:`${categoryLabel}: ${b.subject}`,message:`Submitted by a ${req.user!.role}. Open the Reports queue to review.`,link:'/reports'});
+  res.status(201).json({data:item,message:'Report submitted. Our team will review it shortly.'});
+}catch(e){next(e)}});

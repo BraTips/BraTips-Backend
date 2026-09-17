@@ -27,7 +27,7 @@ async function crud(model:any, body:any, req:any, res:any, next:any) { try { if(
 for(const [path,model,body] of [["leagues",League,leagueBody],["seasons",Season,seasonBody],["teams",Team,teamBody],["matches",Match,matchBody]] as const){ adminRouter.get(`/${path}`, (req,res,next)=>crud(model,body,req,res,next)); adminRouter.post(`/${path}`, (req,res,next)=>crud(model,body,req,res,next)); adminRouter.patch(`/${path}/:id`, (req,res,next)=>crud(model,body,req,res,next)); adminRouter.delete(`/${path}/:id`, (req,res,next)=>crud(model,body,req,res,next)); }
 
 
-adminRouter.get("/dashboard", async (_req,res,next)=>{ try { const [users,leagues,seasons,teams,matches,live,finished,tipsterPending,tipsters,predictions,approved,rejected,activeSubscriptions,pastDueSubscriptions,oddsSnapshots,subscriptionRevenue]=await Promise.all([User.countDocuments(),League.countDocuments(),Season.countDocuments(),Team.countDocuments(),Match.countDocuments(),Match.countDocuments({status:"live"}),Match.countDocuments({status:"finished"}),TipsterApplication.countDocuments({status:{ $in:["pending","under_review","more_info"]}}),TipsterProfile.countDocuments({active:true}),Prediction.countDocuments(),Prediction.countDocuments({status:"won"}),Prediction.countDocuments({status:"lost"}),Subscription.countDocuments({status:{ $in:["active","trialing"]}}),Subscription.countDocuments({status:"past_due"}),OddsSnapshot.countDocuments(),SubscriptionRevenue.aggregate([{$match:{status:'paid'}},{$group:{_id:'$currency',amount:{$sum:'$amount'}}}])]); const totalSettled=approved+rejected; res.json({data:{users,leagues,seasons,teams,matches,live,finished,tipsterPending,tipsters,predictions,approvedPredictions:approved,lostPredictions:rejected,winRate:totalSettled?Math.round(approved/totalSettled*1000)/10:0,activeSubscriptions,pastDueSubscriptions,oddsSnapshots,subscriptionRevenue:subscriptionRevenue.reduce((sum:any,x:any)=>sum+Number(x.amount||0),0),subscriptionRevenueCurrency:subscriptionRevenue[0]?._id||'USD'}}); } catch(e){next(e);} });
+adminRouter.get("/dashboard", async (_req,res,next)=>{ try { const [users,leagues,seasons,teams,matches,live,finished,tipsterPending,tipsters,predictions,approved,rejected,activeSubscriptions,pastDueSubscriptions,oddsSnapshots,subscriptionRevenue,openReports,urgentReports]=await Promise.all([User.countDocuments(),League.countDocuments(),Season.countDocuments(),Team.countDocuments(),Match.countDocuments(),Match.countDocuments({status:"live"}),Match.countDocuments({status:"finished"}),TipsterApplication.countDocuments({status:{ $in:["pending","under_review","more_info"]}}),TipsterProfile.countDocuments({active:true}),Prediction.countDocuments(),Prediction.countDocuments({status:"won"}),Prediction.countDocuments({status:"lost"}),Subscription.countDocuments({status:{ $in:["active","trialing"]}}),Subscription.countDocuments({status:"past_due"}),OddsSnapshot.countDocuments(),SubscriptionRevenue.aggregate([{$match:{status:'paid'}},{$group:{_id:'$currency',amount:{$sum:'$amount'}}}]),Report.countDocuments({status:{$in:["open","in_progress"]}}),Report.countDocuments({status:"open",priority:"high"})]); const totalSettled=approved+rejected; res.json({data:{users,leagues,seasons,teams,matches,live,finished,tipsterPending,tipsters,predictions,approvedPredictions:approved,lostPredictions:rejected,winRate:totalSettled?Math.round(approved/totalSettled*1000)/10:0,activeSubscriptions,pastDueSubscriptions,oddsSnapshots,subscriptionRevenue:subscriptionRevenue.reduce((sum:any,x:any)=>sum+Number(x.amount||0),0),subscriptionRevenueCurrency:subscriptionRevenue[0]?._id||'USD',openReports,urgentReports}}); } catch(e){next(e);} });
 
 adminRouter.get("/users", async (req,res)=>{ const page=Math.max(Number(req.query.page)||1,1),limit=Math.min(Math.max(Number(req.query.limit)||25,1),100),search=typeof req.query.search==="string"?req.query.search.trim():"",role=typeof req.query.role==="string"?req.query.role:undefined; const filter:any=search?{$or:[{name:{$regex:search,$options:"i"}},{email:{$regex:search,$options:"i"}}]}:{}; if(role) filter.role=role; const [data,total]=await Promise.all([User.find(filter).select("-passwordHash").sort({createdAt:-1}).skip((page-1)*limit).limit(limit),User.countDocuments(filter)]); res.json({data,pagination:{page,limit,total,pages:Math.ceil(total/limit)}}); });
 adminRouter.patch("/users/:id", async(req,res)=>{ const body=z.object({name:z.string().min(2).max(100).optional(),role:z.enum(["user","admin","tipster"]).optional(),status:z.enum(["active","suspended"]).optional()}).parse(req.body); const user=await User.findByIdAndUpdate(req.params.id,{$set:body},{new:true}).select("-passwordHash"); if(!user)return res.status(404).json({message:"User not found"}); res.json({data:user}); });
@@ -55,6 +55,7 @@ import { TipsterReward } from '../models/TipsterReward';
 import { TipsterWallet } from '../models/TipsterWallet';
 import { WalletTransaction } from '../models/WalletTransaction';
 import { WithdrawalRequest } from '../models/WithdrawalRequest';
+import { Report } from '../models/Report';
 import { SubscriptionRevenue } from '../models/SubscriptionRevenue';
 import { RewardSettings } from '../models/RewardSettings';
 import { BetOfDay } from '../models/BetOfDay';
@@ -98,6 +99,38 @@ adminRouter.get('/wallets/:tipsterId/integrity',async(req,res,next)=>{try{const 
 adminRouter.get('/withdrawals',async(req,res,next)=>{try{const status=typeof req.query.status==='string'?req.query.status:undefined;const filter:any=status?{status}:{};const data=await WithdrawalRequest.find(filter).populate({path:'tipsterId',populate:{path:'userId',select:'name email username'}}).sort({createdAt:-1}).limit(500);res.json({data});}catch(e){next(e)}});
 const withdrawalAdminBody=z.object({status:z.enum(['approved','paid','rejected']),adminNote:z.string().max(500).optional()});
 adminRouter.patch('/withdrawals/:id',async(req,res,next)=>{try{const b=withdrawalAdminBody.parse(req.body);res.json({data:await settleWithdrawal(req.params.id,b.status,b.adminNote)});}catch(e){next(e)}});
+
+adminRouter.get('/reports',async(req,res,next)=>{try{
+  const status=typeof req.query.status==='string'?req.query.status:undefined;
+  const category=typeof req.query.category==='string'?req.query.category:undefined;
+  const priority=typeof req.query.priority==='string'?req.query.priority:undefined;
+  const search=typeof req.query.search==='string'?req.query.search.trim():'';
+  const filter:any={};
+  if(status) filter.status=status;
+  if(category) filter.category=category;
+  if(priority) filter.priority=priority;
+  if(search) filter.$or=[{subject:{$regex:search,$options:'i'}},{description:{$regex:search,$options:'i'}}];
+  const [data,openCount,inProgressCount]=await Promise.all([
+    Report.find(filter).populate('reporterId','name email role').sort({createdAt:-1}).limit(500),
+    Report.countDocuments({status:'open'}),
+    Report.countDocuments({status:'in_progress'})
+  ]);
+  res.json({data,summary:{open:openCount,inProgress:inProgressCount}});
+}catch(e){next(e)}});
+adminRouter.get('/reports/:id',async(req,res,next)=>{try{const item=await Report.findById(req.params.id).populate('reporterId','name email role').populate('resolvedBy','name email');if(!item)return res.status(404).json({message:'Report not found'});res.json({data:item});}catch(e){next(e)}});
+const reportAdminBody=z.object({status:z.enum(['open','in_progress','resolved','rejected','closed']).optional(),priority:z.enum(['low','medium','high']).optional(),adminNote:z.string().max(2000).optional()});
+adminRouter.patch('/reports/:id',async(req,res,next)=>{try{
+  const b=reportAdminBody.parse(req.body);
+  const item=await Report.findById(req.params.id);
+  if(!item)return res.status(404).json({message:'Report not found'});
+  const auth=req as AuthRequest;
+  if(b.status){item.status=b.status; if(['resolved','rejected','closed'].includes(b.status)){item.resolvedBy=auth.user!.id as any;item.resolvedAt=new Date();}}
+  if(b.priority) item.priority=b.priority;
+  if(b.adminNote!==undefined) item.adminNote=b.adminNote;
+  await item.save();
+  await notify(item.reporterId,{type:'system',title:'Update on your report',message:`"${item.subject}" is now ${item.status.replace('_',' ')}.`});
+  res.json({data:item});
+}catch(e){next(e)}});
 
 adminRouter.get('/sync/status',async(_req,res,next)=>{try{const [latest,history]=await Promise.all([SyncJob.findOne().sort({startedAt:-1}),SyncJob.find().sort({startedAt:-1}).limit(30)]);res.json({data:{latest,history}});}catch(e){next(e)}});
 adminRouter.post('/sync/run',async(req,res,next)=>{try{const type=req.body?.type==='live'?'live':'daily';const date=typeof req.body?.date==='string'?req.body.date:new Date().toISOString().slice(0,10);const job=await runSync(type,date);res.json({data:job});}catch(e){next(e)}});
