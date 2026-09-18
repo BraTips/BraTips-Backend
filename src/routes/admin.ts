@@ -77,7 +77,7 @@ adminRouter.get('/rewards/revenue',async(req,res,next)=>{try{
   const [total,byCurrency,byMonth]=await Promise.all([
     SubscriptionRevenue.aggregate([{$match:{status:'paid',paidAt:{$gte:since}}},{$group:{_id:null,amount:{$sum:'$amount'},count:{$sum:1}}}]),
     SubscriptionRevenue.aggregate([{$match:{status:'paid',paidAt:{$gte:since}}},{$group:{_id:'$currency',amount:{$sum:'$amount'},count:{$sum:1}}}]),
-    SubscriptionRevenue.aggregate([{$match:{status:'paid',paidAt:{$gte:since}}},{$group:{_id:{$dateToString:{format:'%Y-%m',date:'$paidAt'}},amount:{$sum:'$amount'},count:{$sum:1}}},{$sort:{_id:-1}}])
+    SubscriptionRevenue.aggregate([{$match:{status:'paid',paidAt:{$gte:since}}},{$group:{_id:{$dateToString:{format:'%Y-%m',date:'$paidAt'}},amount:{$sum:'$amount'},count:{$sum:1}}},{$sort:{_id:-1}}]).allowDiskUse(true)
   ]);
   res.json({data:{total:total[0]||{amount:0,count:0},byCurrency,byMonth}});
 }catch(e){next(e)}});

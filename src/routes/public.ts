@@ -179,17 +179,18 @@ publicRouter.get("/matches/:id", async (req,res)=>{
 publicRouter.get('/dropping-odds',async(req,res,next)=>{
   try{
     const minDrop=Math.max(Number(req.query.minDrop)||0,0);
+    const now=new Date();
+    const end=new Date(now.getTime()+72*60*60*1000);
+    const matches=await Match.find({kickoff:{$gte:now,$lte:end},status:{$in:['scheduled','live']}}).populate('leagueId','name logo').populate('homeTeamId','name shortName logo').populate('awayTeamId','name shortName logo');
+    const matchIds=matches.map((m:any)=>m._id);
+    if(!matchIds.length) return res.json({data:[]});
     const rows=await OddsSnapshot.aggregate([
-      {$match:{mode:'pre-match',movementPct:{$lte:-minDrop}}},
+      {$match:{matchId:{$in:matchIds},mode:'pre-match',movementPct:{$lte:-minDrop}}},
       {$sort:{movementPct:1,recordedAt:-1}},
       {$group:{_id:{matchId:'$matchId',bookmakerId:'$bookmakerId',marketId:'$marketId',label:'$label'},row:{$first:'$$ROOT'}}},
       {$replaceRoot:{newRoot:'$row'}},
       {$sort:{movementPct:1,recordedAt:-1}},{$limit:1000}
-    ]);
-    const matchIds=rows.map(x=>x.matchId);
-    const now=new Date();
-    const end=new Date(now.getTime()+72*60*60*1000);
-    const matches=await Match.find({_id:{$in:matchIds},kickoff:{$gte:now,$lte:end},status:{$in:['scheduled','live']}}).populate('leagueId','name logo').populate('homeTeamId','name shortName logo').populate('awayTeamId','name shortName logo');
+    ]).allowDiskUse(true);
     const byId=new Map(matches.map((m:any)=>[String(m._id),m]));
     res.json({data:rows.map(x=>({...x,matchId:byId.get(String(x.matchId))||null})).filter(x=>x.matchId)});
   }catch(e){next(e)}
@@ -209,7 +210,7 @@ publicRouter.get("/tipsters/rankings", async(req,res,next)=>{try{
     {$match:{status:{$in:['won','lost','void']},resultAt:{$gte:start,$lt:end}}},
     {$group:{_id:'$tipsterId',settled:{$sum:{$cond:[{$in:['$status',['won','lost']]},1,0]}},wins:{$sum:{$cond:[{$eq:['$status','won']},1,0]}},losses:{$sum:{$cond:[{$eq:['$status','lost']},1,0]}},profit:{$sum:{$ifNull:['$profit',0]}},oddsSum:{$sum:{$cond:[{$in:['$status',['won','lost']]},'$odds',0]}}}},
     {$match:{settled:{$gt:0}}},{$sort:{profit:-1,settled:-1}},{$limit:100}
-  ]);
+  ]).allowDiskUse(true);
   const ids=rows.map((r:any)=>r._id); const profiles=await TipsterProfile.find({userId:{$in:ids},active:true}).select('userId username country profilePhoto').lean();
   const by=new Map(profiles.map((p:any)=>[String(p.userId),p]));
   const data=rows.map((r:any)=>{const p=by.get(String(r._id)); const settled=Number(r.settled||0); const profit=Number(r.profit||0); const odds=Number(r.oddsSum||0); return p?{userId:String(r._id),username:p.username,country:p.country,profilePhoto:p.profilePhoto,settled,wins:Number(r.wins||0),losses:Number(r.losses||0),profit,winRate:settled?Number(r.wins||0)/settled*100:0,roi:odds?profit/odds*100:0}:null}).filter(Boolean);
@@ -305,22 +306,22 @@ publicRouter.get("/prediction-trends", async (req,res,next)=>{
         {$group:{_id:'$prediction',tips:{$sum:1},wins:{$sum:{$cond:[{$eq:['$status','won']},1,0]}},profit:{$sum:{$ifNull:['$profit',0]}},oddsSum:{$sum:{$ifNull:['$odds',0]}}}},
         {$project:{_id:1,tips:1,wins:1,profit:1,avgOdds:{$cond:[{$gt:['$tips',0]},{$divide:['$oddsSum','$tips']},0]},winRate:{$cond:[{$gt:['$tips',0]},{$multiply:[{$divide:['$wins','$tips']},100]},0]}}},
         {$sort:{profit:-1,tips:-1}}
-      ]),
+      ]).allowDiskUse(true),
       Prediction.aggregate([
         {$match:settledMatch},
         {$group:{_id:{$dateToString:{format:'%Y-%m-%d',date:'$resultAt'}},tips:{$sum:1},wins:{$sum:{$cond:[{$eq:['$status','won']},1,0]}},profit:{$sum:{$ifNull:['$profit',0]}}}},
         {$sort:{_id:1}}
-      ]),
+      ]).allowDiskUse(true),
       Prediction.aggregate([
         {$match:settledMatch},
         {$group:{_id:'$prediction',tips:{$sum:1}}},
         {$sort:{tips:-1}}
-      ]),
+      ]).allowDiskUse(true),
       Prediction.aggregate([
         {$match:activityMatch},
         {$group:{_id:{$dateToString:{format:'%Y-%m-%d',date:'$createdAt'}},tips:{$sum:1}}},
         {$sort:{_id:1}}
-      ])
+      ]).allowDiskUse(true)
     ]);
     const summary=summaryRows[0]||{tips:0,wins:0,profit:0,avgOdds:0,winRate:0};
     const activityByDate=new Map((activityRows as any[]).map((r:any)=>[r._id,r]));

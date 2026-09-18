@@ -30,12 +30,12 @@ analyticsRouter.get('/overview', async (req, res, next) => {
       { $match: { createdAt: { $gte: start } } },
       { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } }, count: { $sum: 1 } } },
       { $sort: { _id: 1 } }
-    ]);
+    ]).allowDiskUse(true);
     const predictionSeries = await Prediction.aggregate([
       { $match: { createdAt: { $gte: start } } },
       { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } }, count: { $sum: 1 }, profit: { $sum: { $ifNull: ['$profit', 0] } } } },
       { $sort: { _id: 1 } }
-    ]);
+    ]).allowDiskUse(true);
     res.json({ data: { rangeDays: days, totals: { users, matches, predictions, applications, tipsters, leagues }, matchStatuses: statusCounts, predictionStatuses: predictionStatus, userSeries, predictionSeries, topTipsters } });
   } catch (e) { next(e); }
 });
